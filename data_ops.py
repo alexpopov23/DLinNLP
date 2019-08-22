@@ -1,9 +1,11 @@
 import os
+import collections
 import pickle
 import numpy
 import gensim
 import copy
 import torch
+import random
 
 import xml.etree.ElementTree as ET
 
@@ -14,36 +16,74 @@ f_sensekey2synset = "/home/lenovo/dev/neural-wsd/data/sensekey2synset.pkl"
 sensekey2synset = pickle.load(open(f_sensekey2synset, "rb"))
 CUSTOM_FIELDS = ('form', 'lemma', 'pos', 'synsets')
 
+pos_map = {"NOUN": "n", "VERB": "v", "ADJ": "a", "ADV": "r"}
+
 class WSDataset(Dataset):
 
-    def __init__(self, tsv_file, src2id, embeddings, embeddings_dim):
-        self.data = parse_tsv(open(tsv_file, "r").read(), 100)
+    def __init__(self, tsv_file, src2id, embeddings, embeddings_dim, lemma2synsets, input_synsets=False):
+        self.data = parse_tsv(open(tsv_file, "r").read(), 300)
         self.src2id = src2id
         self.embeddings = embeddings
         self.embeddings_dim = embeddings_dim
+        self.lemma2synsets = lemma2synsets
+        self.input_synsets = input_synsets
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, idx):
         sample = self.data[idx]
-        inputs = [self.src2id[lemma] if lemma in self.src2id else self.src2id["<UNK>"] for lemma in sample.lemmas]
-        mask, targets = [], []
-        for label in sample.synsets:
-            target = torch.zeros(300)
+        if self.input_synsets:
+            inputs = []
+            for i, synsets in enumerate(sample.synsets):
+                lemma = sample.lemmas[i]
+                if synsets != "_":
+                    synsets_lemma = synsets.split(",") + [lemma]
+                    input = random.choice(synsets_lemma)
+                    inputs.append(self.src2id[input] if input in self.src2id else self.src2id["<UNK>"])
+                else:
+                    inputs.append(self.src2id[lemma] if lemma in self.src2id else self.src2id["<UNK>"])
+        else:
+            inputs = [self.src2id[lemma] if lemma in self.src2id else self.src2id["<UNK>"] for lemma in sample.lemmas]
+        mask, targets, lemmas, gold_synsets, neg_targets = [], [], [] , [], []
+        for i, label in enumerate(sample.synsets):
+            target, neg_target = torch.zeros(300), torch.zeros(300)
             if label == "_":
                 mask.append(False)
             else:
                 mask.append(True)
-                synsets = label.split(",")
-                for synset in synsets:
+                these_synsets = label.split(",")
+                for synset in these_synsets:
                     if synset in self.src2id:
                         synset_embedding = torch.Tensor(self.embeddings[self.src2id[synset]])
                         target += synset_embedding
-                target /= len(synsets)
+                target /= len(these_synsets)
+                # Pick negative targets too
+                lemma_pos = sample.lemmas[i] + "-" + pos_map[sample.pos[i]]
+                neg_options = copy.copy(self.lemma2synsets[lemma_pos])
+                for synset in these_synsets:
+                    neg_options.remove(synset)
+                while True:
+                    if len(neg_options) == 0:
+                        neg_synset = random.choice(list(self.src2id))
+                        break
+                    neg_synset = random.choice(neg_options)
+                    if neg_synset in self.src2id:
+                        break
+                    else:
+                        neg_options.remove(neg_synset)
+                neg_target = torch.Tensor(self.embeddings[self.src2id[neg_synset]])
             targets.append(target)
-        return sample.lemmas, sample.pos, torch.tensor(inputs, dtype=torch.long), torch.tensor(torch.stack(targets)), \
-               sample.synsets, torch.tensor(mask, dtype=bool), sample.length
+            neg_targets.append(neg_target)
+        data = {"lemmas": sample.lemmas,
+                "pos": sample.pos,
+                "inputs": torch.tensor(inputs, dtype=torch.long),
+                "targets": torch.stack(targets).clone().detach(),
+                "synsets": sample.synsets,
+                "mask": torch.tensor(mask, dtype=bool),
+                "length": sample.length,
+                "neg_targets": torch.stack(neg_targets).clone().detach()}
+        return data
 
 class Sample():
 
@@ -141,6 +181,37 @@ def load_embeddings(embeddings_path):
             embeddings = numpy.concatenate((embeddings, [unk]))
     return embeddings, src2id, id2src
 
+def get_wordnet_lexicon(lexicon_path, pos_filter=False):
+    """Reads the WordNet dictionary
+
+    Args:
+        lexicon_path: A string, the path to the dictionary
+
+    Returns:
+        lemma2synsets: A dictionary, maps lemmas to synset IDs
+
+    """
+    lemma2synsets = {}
+    lexicon = open(lexicon_path, "r")
+    # max_synsets = 0
+    for line in lexicon.readlines():
+        fields = line.split(" ")
+        lemma_base, synsets = fields[0], fields[1:]
+        # if len(synsets) > max_synsets:
+        #     max_synsets = len(synsets)
+        for i, entry in enumerate(synsets):
+            synset = entry[:10].strip()
+            if pos_filter:
+                pos = synset[-1]
+                lemma = lemma_base + "-" + pos
+            else:
+                lemma = lemma_base
+            if lemma not in lemma2synsets:
+                lemma2synsets[lemma] = [synset]
+            else:
+                lemma2synsets[lemma].append(synset)
+    lemma2synsets = collections.OrderedDict(sorted(lemma2synsets.items()))
+    return lemma2synsets
 
 if __name__ == "__main__":
     # transform_uef2tsv("/home/lenovo/dev/neural-wsd/data/Unified-WSD-framework/WSD_Training_Corpora/SemCor",
