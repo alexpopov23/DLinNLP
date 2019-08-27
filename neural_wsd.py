@@ -12,38 +12,48 @@ embeddings = torch.Tensor(embeddings)
 lexicon_path = "/home/lenovo/tools/ukb_wsd/lkb_sources/wn30.lex"
 lemma2synsets = get_wordnet_lexicon(lexicon_path, True)
 
-save_path = "/home/lenovo/dev/DLinNLP/experiments/test"
+save_path = "/home/lenovo/dev/DLinNLP-materials/experiments/test"
 f_train = "/home/lenovo/dev/neural-wsd/data/Unified-WSD-framework/tsv/semcor.tsv"
 f_test = "/home/lenovo/dev/neural-wsd/data/Unified-WSD-framework/tsv/senseval2.tsv"
-trainset = WSDataset(f_train, src2id, embeddings, 300, lemma2synsets, input_synsets=True)
+trainset = WSDataset(f_train, src2id, embeddings, 300, lemma2synsets)
 testset = WSDataset(f_test, src2id, embeddings, 300, lemma2synsets)
 
-trainloader = torch.utils.data.DataLoader(trainset, batch_size=128, shuffle=True)
+batch_size = 128
+n_hidden = 400
+hiden_layers = 2
+dropout = 0.2
+embedding_dim = embeddings.shape[1]
+learning_rate = 0.2
+
+trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True)
 testloader = torch.utils.data.DataLoader(testset, batch_size=len(testset.data), shuffle=False)
 
-model = WSDModel(300, embeddings, 1000, 1, 300)
+model = WSDModel(embedding_dim, embeddings, n_hidden, hiden_layers, dropout)
 loss_function = torch.nn.MSELoss()
 # optimizer = torch.optim.Adam(model.parameters())
-optimizer = torch.optim.SGD(model.parameters(), lr=0.2)
+optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate)
 
 # Train loop
 least_loss = 0.0
 best_accuracy = 0.0
+eval_at = 100
 for epoch in range(100):
     print("***** Start of epoch " + str(epoch) + " *****")
     average_loss = 0.0
     for step, data in enumerate(trainloader):
+        model.train()
         outputs = model(data["inputs"], data["length"], data["mask"])
         mask = torch.reshape(data["mask"], (data["mask"].shape[0], data["mask"].shape[1], 1))
         targets = torch.masked_select(data["targets"], mask)
-        targets = targets.view(-1, 300)
+        targets = targets.view(-1, embedding_dim)
         neg_targets = torch.masked_select(data["neg_targets"], mask)
-        neg_targets = neg_targets.view(-1, 300)
+        neg_targets = neg_targets.view(-1, embedding_dim)
         loss = 0.85 * loss_function(outputs, targets) + 0.15 * (1 - loss_function(outputs, neg_targets))
         loss.backward()
         average_loss += loss
         optimizer.step()
-        if step % 20 == 0:
+        if step % eval_at == 0:
+            model.eval()
             print("Step " + str(step))
             lemmas = numpy.asarray(data['lemmas']).transpose()[data["mask"]]
             synsets = numpy.asarray(data['synsets']).transpose()[data["mask"]]
@@ -52,7 +62,7 @@ for epoch in range(100):
                                                 embeddings, src2id, pos_filter=True)
             train_accuracy = matches * 1.0 / total
             print("Training accuracy at step " + str(step) + ": " + str(train_accuracy))
-            average_loss /= 20
+            average_loss /= (eval_at if step != 0 else 1)
             print("Average loss (training) is: " + str(average_loss.detach().numpy()))
             average_loss = 0.0
             # Loop over the eval data

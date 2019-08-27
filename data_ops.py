@@ -20,31 +20,19 @@ pos_map = {"NOUN": "n", "VERB": "v", "ADJ": "a", "ADV": "r"}
 
 class WSDataset(Dataset):
 
-    def __init__(self, tsv_file, src2id, embeddings, embeddings_dim, lemma2synsets, input_synsets=False):
+    def __init__(self, tsv_file, src2id, embeddings, embeddings_dim, lemma2synsets):
         self.data = parse_tsv(open(tsv_file, "r").read(), 300)
         self.src2id = src2id
         self.embeddings = embeddings
         self.embeddings_dim = embeddings_dim
         self.lemma2synsets = lemma2synsets
-        self.input_synsets = input_synsets
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, idx):
         sample = self.data[idx]
-        if self.input_synsets:
-            inputs = []
-            for i, synsets in enumerate(sample.synsets):
-                lemma = sample.lemmas[i]
-                if synsets != "_":
-                    synsets_lemma = synsets.split(",") + [lemma]
-                    input = random.choice(synsets_lemma)
-                    inputs.append(self.src2id[input] if input in self.src2id else self.src2id["<UNK>"])
-                else:
-                    inputs.append(self.src2id[lemma] if lemma in self.src2id else self.src2id["<UNK>"])
-        else:
-            inputs = [self.src2id[lemma] if lemma in self.src2id else self.src2id["<UNK>"] for lemma in sample.lemmas]
+        inputs = [self.src2id[lemma] if lemma in self.src2id else self.src2id["<UNK>"] for lemma in sample.lemmas]
         mask, targets, lemmas, gold_synsets, neg_targets = [], [], [] , [], []
         for i, label in enumerate(sample.synsets):
             target, neg_target = torch.zeros(300), torch.zeros(300)
@@ -52,6 +40,7 @@ class WSDataset(Dataset):
                 mask.append(False)
             else:
                 mask.append(True)
+                lemma_pos = sample.lemmas[i] + "-" + pos_map[sample.pos[i]]
                 these_synsets = label.split(",")
                 for synset in these_synsets:
                     if synset in self.src2id:
@@ -59,7 +48,6 @@ class WSDataset(Dataset):
                         target += synset_embedding
                 target /= len(these_synsets)
                 # Pick negative targets too
-                lemma_pos = sample.lemmas[i] + "-" + pos_map[sample.pos[i]]
                 neg_options = copy.copy(self.lemma2synsets[lemma_pos])
                 for synset in these_synsets:
                     neg_options.remove(synset)
@@ -80,7 +68,7 @@ class WSDataset(Dataset):
                 "inputs": torch.tensor(inputs, dtype=torch.long),
                 "targets": torch.stack(targets).clone().detach(),
                 "synsets": sample.synsets,
-                "mask": torch.tensor(mask, dtype=bool),
+                "mask": torch.tensor(mask, dtype=torch.bool),
                 "length": sample.length,
                 "neg_targets": torch.stack(neg_targets).clone().detach()}
         return data
@@ -193,12 +181,9 @@ def get_wordnet_lexicon(lexicon_path, pos_filter=False):
     """
     lemma2synsets = {}
     lexicon = open(lexicon_path, "r")
-    # max_synsets = 0
     for line in lexicon.readlines():
         fields = line.split(" ")
         lemma_base, synsets = fields[0], fields[1:]
-        # if len(synsets) > max_synsets:
-        #     max_synsets = len(synsets)
         for i, entry in enumerate(synsets):
             synset = entry[:10].strip()
             if pos_filter:

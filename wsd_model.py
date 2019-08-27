@@ -7,17 +7,16 @@ pos_map = {"NOUN": "n", "VERB": "v", "ADJ": "a", "ADV": "r"}
 
 class WSDModel(nn.Module):
 
-    def __init__(self, embedding_dim, embedding_weights, hidden_dim, hidden_layers, output_size):
+    def __init__(self, embedding_dim, embedding_weights, hidden_dim, hidden_layers, dropout):
         super(WSDModel, self).__init__()
         self.hidden_layers = hidden_layers
         self.hidden_dim = hidden_dim
         self.word_embeddings = nn.Embedding.from_pretrained(embedding_weights, freeze=False)
-        self.lstm = nn.LSTM(embedding_dim, hidden_dim, hidden_layers, bidirectional=True, batch_first=True)
-        self.output = nn.Linear(2 * hidden_dim, output_size)
+        self.lstm = nn.LSTM(embedding_dim, hidden_dim, hidden_layers, bidirectional=True, batch_first=True, dropout=dropout)
+        self.output = nn.Linear(2 * hidden_dim, embedding_dim)
 
     def forward(self, X, X_lengths, mask):
         X = self.word_embeddings(X)
-        #TODO check the sorting issue
         X = torch.nn.utils.rnn.pack_padded_sequence(X, X_lengths, batch_first=True, enforce_sorted=False)
         hidden = (torch.randn(self.hidden_layers * 2, len(X_lengths), self.hidden_dim),
                   torch.randn(self.hidden_layers * 2, len(X_lengths), self.hidden_dim))
