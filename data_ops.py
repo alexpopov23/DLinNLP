@@ -20,13 +20,14 @@ POS_MAP = {"NOUN": "n", "VERB": "v", "ADJ": "a", "ADV": "r"}
 
 class WSDataset(Dataset):
 
-    def __init__(self, tsv_file, src2id, embeddings, embeddings_dim, lemma2synsets):
+    def __init__(self, tsv_file, src2id, embeddings, embeddings_dim, max_labels, lemma2synsets):
         # Our data has some pretty long sentences, so we will set a large max length
         # Alternatively, can throw them out or truncate them
         self.data = parse_tsv(open(tsv_file, "r").read(), max_length=300)
         self.src2id = src2id
         self.embeddings = embeddings
         self.embeddings_dim = embeddings_dim
+        self.max_labels = max_labels
         self.lemma2synsets = lemma2synsets
 
     def __len__(self):
@@ -40,24 +41,30 @@ class WSDataset(Dataset):
         # Note that we are working with lemmas for the input, not the word forms
         inputs = [self.src2id[lemma] if lemma in self.src2id
                   else self.src2id["<UNK>"] for lemma in sample.lemmas]
-        targets, neg_targets, mask = [], [], []
+        targets, neg_targets, targets_labels, mask, lengths_labels = [], [], [], [], []
         for i, label in enumerate(sample.synsets):
-            target, neg_target = torch.zeros(self.embeddings_dim), torch.zeros(self.embeddings_dim)
+            target, neg_target, = torch.zeros(self.embeddings_dim), torch.zeros(self.embeddings_dim)
             if label == "_":
                 mask.append(False)
+                lengths_labels.append(0)
+                targets_labels.append(0)
             else:
                 mask.append(True)
                 lemma_pos = sample.lemmas[i] + "-" + POS_MAP[sample.pos[i]] # e.g. "bear-n"
+                all_synsets = self.lemma2synsets[lemma_pos]
                 # Take care of cases of multiple labels, e.g. "01104026-a,00357790-a"
                 these_synsets = label.split(",")
+                num_labels = len(these_synsets)
                 for synset in these_synsets:
                     if synset in self.src2id:
                         synset_embedding = torch.Tensor(self.embeddings[self.src2id[synset]])
                         target += synset_embedding
-                target /= len(these_synsets)
+                targets_labels.append(self.lemma2synsets[lemma_pos].index(random.choice(these_synsets)))
+                target /= num_labels
+                lengths_labels.append(len(all_synsets))
                 # Pick negative targets too
                 # Copy the list of synsets, so that we don't change the dict
-                neg_options = copy.copy(self.lemma2synsets[lemma_pos])
+                neg_options = copy.copy(all_synsets)
                 for synset in these_synsets:
                     # Get rid of the gold synsets
                     neg_options.remove(synset)
@@ -77,11 +84,13 @@ class WSDataset(Dataset):
             neg_targets.append(neg_target)
         data = {"lemmas": sample.lemmas,
                 "length": sample.length,
+                "lengths_labels": torch.tensor(lengths_labels, dtype=torch.long),
                 "pos": sample.pos,
                 "synsets": sample.synsets,
                 "inputs": torch.tensor(inputs, dtype=torch.long),
                 "targets": torch.stack(targets).clone().detach(),
                 "neg_targets": torch.stack(neg_targets).clone().detach(),
+                "targets_labels": torch.tensor(targets_labels, dtype=torch.long),
                 "mask": torch.tensor(mask, dtype=torch.bool)}
         return data
 
@@ -102,7 +111,10 @@ def parse_tsv(f_dataset, max_length):
         sample = Sample()
         for token in sentence:
             sample.forms.append(token["form"])
-            sample.lemmas.append(token["lemma"])
+            lemma = token["lemma"]
+            lemma = lemma.replace("'", "APOSTROPHE_")
+            lemma = lemma.replace(".", "DOT_")
+            sample.lemmas.append(lemma)
             sample.pos.append(token["pos"])
             sample.synsets.append(token["synsets"])
         sample.length = len(sample.forms)
@@ -196,11 +208,13 @@ def get_wordnet_lexicon(lexicon_path, pos_filter=False):
         lemma2synsets: A dictionary, maps lemmas to synset IDs
 
     """
-    lemma2synsets = {}
+    lemma2synsets, max_labels = {}, 0
     lexicon = open(lexicon_path, "r")
     for line in lexicon.readlines():
         fields = line.split(" ")
         lemma_base, synsets = fields[0], fields[1:]
+        if len(synsets) > max_labels:
+            max_labels = len(synsets)
         for i, entry in enumerate(synsets):
             synset = entry[:10].strip()
             if pos_filter:
@@ -208,12 +222,14 @@ def get_wordnet_lexicon(lexicon_path, pos_filter=False):
                 lemma = lemma_base + "-" + pos
             else:
                 lemma = lemma_base
+            lemma = lemma.replace("'", "APOSTROPHE_")
+            lemma = lemma.replace(".", "DOT_")
             if lemma not in lemma2synsets:
                 lemma2synsets[lemma] = [synset]
             else:
                 lemma2synsets[lemma].append(synset)
     lemma2synsets = collections.OrderedDict(sorted(lemma2synsets.items()))
-    return lemma2synsets
+    return lemma2synsets, max_labels
 
 if __name__ == "__main__":
     # transform_uef2tsv("/home/lenovo/dev/neural-wsd/data/Unified-WSD-framework/WSD_Training_Corpora/SemCor",

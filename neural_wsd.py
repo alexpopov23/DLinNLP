@@ -66,14 +66,14 @@ if __name__ == "__main__":
     embeddings = torch.Tensor(embeddings)
     embedding_dim = embeddings.shape[1]
     lexicon_path = args.lexicon_path
-    lemma2synsets = get_wordnet_lexicon(lexicon_path, args.pos_filter)
+    lemma2synsets, max_labels = get_wordnet_lexicon(lexicon_path, args.pos_filter)
 
     # Get the training/dev/testing data
     save_path = args.save_path
     f_train = args.train_data_path
     f_dev = args.dev_data_path
-    trainset = WSDataset(f_train, src2id, embeddings, embedding_dim, lemma2synsets)
-    devset = WSDataset(f_dev, src2id, embeddings, embedding_dim, lemma2synsets)
+    trainset = WSDataset(f_train, src2id, embeddings, embedding_dim, max_labels, lemma2synsets)
+    devset = WSDataset(f_dev, src2id, embeddings, embedding_dim, max_labels, lemma2synsets)
 
     # Get model parameters
     alpha = float(args.alpha)
@@ -88,8 +88,10 @@ if __name__ == "__main__":
     devloader = torch.utils.data.DataLoader(devset, batch_size=len(devset.data), shuffle=False)
 
     # Construct the model
-    model = WSDModel(embedding_dim, embeddings, hiden_neurons, hiden_layers, dropout)
+    model = WSDModel(embedding_dim, embeddings, hiden_neurons, hiden_layers, dropout,
+                     ["context_embedding", "classification"], lemma2synsets)
     loss_function = torch.nn.MSELoss()
+    loss_function_classif = torch.nn.CrossEntropyLoss()
     # optimizer = torch.optim.Adam(model.parameters())
     optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate)
 
@@ -103,13 +105,40 @@ if __name__ == "__main__":
         for step, data in enumerate(trainloader):
             model.train()
             optimizer.zero_grad()
-            outputs = model(data["inputs"], data["length"], data["mask"])
+            lemmas = numpy.asarray(data['lemmas']).transpose()[data["mask"]]
+            pos = numpy.asarray(data['pos']).transpose()[data["mask"]]
+            synsets = numpy.asarray(data['synsets']).transpose()[data["mask"]]
+            lengths_labels = numpy.asarray(data["lengths_labels"])[data["mask"]]
+            outputs = model(data["inputs"], data["length"], data["mask"], lemmas, pos)
             mask = torch.reshape(data["mask"], (data["mask"].shape[0], data["mask"].shape[1], 1))
+            # Calculate loss for the context embedding method
             targets = torch.masked_select(data["targets"], mask)
             targets = targets.view(-1, embedding_dim)
             neg_targets = torch.masked_select(data["neg_targets"], mask)
             neg_targets = neg_targets.view(-1, embedding_dim)
-            loss = alpha * loss_function(outputs, targets) + (1 - alpha) * (1 - loss_function(outputs, neg_targets))
+            targets_labels = numpy.asarray(data["targets_labels"])[data["mask"]]
+            # targets_labels = torch.masked_select(data["targets_labels"], mask)
+            # targets_labels = targets_labels.view(-1, max_labels)
+            # targets_labels = targets_labels[:, :outputs[1].shape[1]]
+            loss = alpha * loss_function(outputs[0], targets) + (1 - alpha) * (1 - loss_function(outputs[0], neg_targets))
+            # Calculate loss for the classification method
+
+            # outputs_classif = torch.nn.utils.rnn.pad_packed_sequence(outputs[1],
+            #                                                          batch_first=True,
+            #                                                          padding_value=0.0,
+            #                                                          total_length=max_labels)
+            # targets_labels = torch.nn.utils.rnn.pack_padded_sequence(targets_labels,
+            #                                                          lengths_labels,
+            #                                                          batch_first=True,
+            #                                                          enforce_sorted=False)
+            # outputs_classif = torch.nn.utils.rnn.pack_padded_sequence(outputs[1],
+            #                                                           lengths_labels,
+            #                                                           batch_first=True,
+            #                                                           enforce_sorted=False)
+            loss_classif = loss_function_classif(outputs[1], targets_labels)
+            # pad_packed_sequence cuts the sequences in the batch to the greatest sequence length
+            X, _ = torch.nn.utils.rnn.pad_packed_sequence(X,
+                                                          batch_first=True)  # shape is [batch_size, max_length_of_X, 2* hidden_layer]
             loss.backward()
             average_loss += loss
             optimizer.step()
@@ -117,9 +146,6 @@ if __name__ == "__main__":
             if step % eval_at == 0:
                 model.eval()
                 print("Step " + str(step))
-                lemmas = numpy.asarray(data['lemmas']).transpose()[data["mask"]]
-                synsets = numpy.asarray(data['synsets']).transpose()[data["mask"]]
-                pos = numpy.asarray(data['pos']).transpose()[data["mask"]]
                 matches, total = calculate_accuracy(outputs, lemmas, pos, synsets, lemma2synsets,
                                                     embeddings, src2id, pos_filter=True)
                 train_accuracy = matches * 1.0 / total
