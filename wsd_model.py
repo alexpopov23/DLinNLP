@@ -63,7 +63,7 @@ class WSDModel(nn.Module):
         return outputs
 
 
-def calculate_accuracy(outputs, lemmas, pos, gold_synsets, lemma2synsets, embeddings, src2id, pos_filter=True):
+def calculate_accuracy_embedding(outputs, lemmas, pos, gold_synsets, lemma2synsets, embeddings, src2id, pos_filter=True):
     matches, total = 0, 0
     for i, output in enumerate(torch.unbind(outputs)):
         if pos_filter:
@@ -82,4 +82,11 @@ def calculate_accuracy(outputs, lemmas, pos, gold_synsets, lemma2synsets, embedd
         if synset_choice in gold_synsets[i].split(","):
             matches += 1
         total += 1
+    return matches, total
+
+def calculate_accuracy_classification(outputs, targets):
+    choices = torch.argmax(outputs, dim=1)
+    comparison_tensor = torch.eq(choices, targets)
+    matches = torch.sum(comparison_tensor).numpy()
+    total = comparison_tensor.shape[0]
     return matches, total

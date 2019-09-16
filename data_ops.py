@@ -47,7 +47,7 @@ class WSDataset(Dataset):
             if label == "_":
                 mask.append(False)
                 lengths_labels.append(0)
-                targets_labels.append(0)
+                targets_labels.append(-1)
             else:
                 mask.append(True)
                 lemma_pos = sample.lemmas[i] + "-" + POS_MAP[sample.pos[i]] # e.g. "bear-n"

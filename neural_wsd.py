@@ -4,7 +4,7 @@ import torch
 import os
 
 from data_ops import WSDataset, load_embeddings, get_wordnet_lexicon
-from wsd_model import WSDModel, calculate_accuracy
+from wsd_model import WSDModel, calculate_accuracy_embedding, calculate_accuracy_classification
 
 if __name__ == "__main__":
 
@@ -101,7 +101,7 @@ if __name__ == "__main__":
     eval_at = 100
     for epoch in range(100):
         print("***** Start of epoch " + str(epoch) + " *****")
-        average_loss = 0.0
+        average_loss_embed, average_loss_classif, average_loss_overall = 0.0, 0.0, 0.0
         for step, data in enumerate(trainloader):
             model.train()
             optimizer.zero_grad()
@@ -116,59 +116,68 @@ if __name__ == "__main__":
             targets = targets.view(-1, embedding_dim)
             neg_targets = torch.masked_select(data["neg_targets"], mask)
             neg_targets = neg_targets.view(-1, embedding_dim)
-            targets_labels = numpy.asarray(data["targets_labels"])[data["mask"]]
-            # targets_labels = torch.masked_select(data["targets_labels"], mask)
-            # targets_labels = targets_labels.view(-1, max_labels)
-            # targets_labels = targets_labels[:, :outputs[1].shape[1]]
-            loss = alpha * loss_function(outputs[0], targets) + (1 - alpha) * (1 - loss_function(outputs[0], neg_targets))
+            targets_labels = torch.from_numpy(numpy.asarray(data["targets_labels"])[data["mask"]])
+            loss_embed = alpha * loss_function(outputs[0], targets) + (1 - alpha) * (1 - loss_function(outputs[0], neg_targets))
             # Calculate loss for the classification method
-
-            # outputs_classif = torch.nn.utils.rnn.pad_packed_sequence(outputs[1],
-            #                                                          batch_first=True,
-            #                                                          padding_value=0.0,
-            #                                                          total_length=max_labels)
-            # targets_labels = torch.nn.utils.rnn.pack_padded_sequence(targets_labels,
-            #                                                          lengths_labels,
-            #                                                          batch_first=True,
-            #                                                          enforce_sorted=False)
-            # outputs_classif = torch.nn.utils.rnn.pack_padded_sequence(outputs[1],
-            #                                                           lengths_labels,
-            #                                                           batch_first=True,
-            #                                                           enforce_sorted=False)
             loss_classif = loss_function_classif(outputs[1], targets_labels)
-            # pad_packed_sequence cuts the sequences in the batch to the greatest sequence length
-            X, _ = torch.nn.utils.rnn.pad_packed_sequence(X,
-                                                          batch_first=True)  # shape is [batch_size, max_length_of_X, 2* hidden_layer]
+            loss = loss_embed + loss_classif
             loss.backward()
-            average_loss += loss
+            average_loss_embed += loss_embed
+            average_loss_classif += loss_classif
             optimizer.step()
             # Eval loop during training
             if step % eval_at == 0:
                 model.eval()
                 print("Step " + str(step))
-                matches, total = calculate_accuracy(outputs, lemmas, pos, synsets, lemma2synsets,
-                                                    embeddings, src2id, pos_filter=True)
-                train_accuracy = matches * 1.0 / total
-                print("Training accuracy at step " + str(step) + ": " + str(train_accuracy))
-                average_loss /= (eval_at if step != 0 else 1)
-                print("Average loss (training) is: " + str(average_loss.detach().numpy()))
-                average_loss = 0.0
+                matches_embed, total_embed = calculate_accuracy_embedding(outputs[0],
+                                                                          lemmas,
+                                                                          pos,
+                                                                          synsets,
+                                                                          lemma2synsets,
+                                                                          embeddings,
+                                                                          src2id,
+                                                                          pos_filter=True)
+                train_accuracy_embed = matches_embed * 1.0 / total_embed
+                matches_classif, total_classif = calculate_accuracy_classification(outputs[1], targets_labels)
+                train_accuracy_classif = matches_classif * 1.0 / total_classif
+                print("Training embedding accuracy at step " + str(step) + ": " + str(train_accuracy_embed))
+                average_loss_embed /= (eval_at if step != 0 else 1)
+                print("Average embedding loss (training) is: " + str(average_loss_embed.detach().numpy()))
+                print("Training classification accuracy at step " + str(step) + ": " + str(train_accuracy_classif))
+                average_loss_classif /= (eval_at if step != 0 else 1)
+                print("Average classification loss (training) is: " + str(average_loss_classif.detach().numpy()))
+                average_loss_overall = average_loss_embed.detach().numpy() + average_loss_classif.detach().numpy()
+                average_loss_embed, average_loss_classif = 0.0, 0.0
+                print("Average overall loss (training) is: " + str(average_loss_overall))
                 # Loop over the eval data
-                matches_all, total_all = 0, 0
+                matches_embed_all, total_embed_all = 0, 0
+                matches_classif_all, total_classif_all = 0, 0
                 for eval_data in devloader:
-                    outputs = model(eval_data["inputs"], eval_data["length"], eval_data["mask"])
                     lemmas = numpy.asarray(eval_data['lemmas']).transpose()[eval_data["mask"]]
                     synsets = numpy.asarray(eval_data['synsets']).transpose()[eval_data["mask"]]
                     pos = numpy.asarray(eval_data['pos']).transpose()[eval_data["mask"]]
-                    matches, total = calculate_accuracy(outputs, lemmas, pos, synsets, lemma2synsets,
-                                                        embeddings, src2id, pos_filter=True)
-                    matches_all += matches
-                    total_all += total
-                test_accuracy = matches_all * 1.0 / total_all
-                print("Test accuracy at step " + str(step) + " is: " + str(test_accuracy))
-                if average_loss < least_loss or test_accuracy > best_accuracy:
-                    least_loss = average_loss
-                    best_accuracy = test_accuracy
+                    targets = torch.from_numpy(numpy.asarray(eval_data["targets_labels"])[eval_data["mask"]])
+                    outputs = model(eval_data["inputs"], eval_data["length"], eval_data["mask"], lemmas, pos)
+                    matches_embed, total_embed = calculate_accuracy_embedding(outputs[0],
+                                                                              lemmas,
+                                                                              pos,
+                                                                              synsets,
+                                                                              lemma2synsets,
+                                                                              embeddings,
+                                                                              src2id,
+                                                                              pos_filter=True)
+                    matches_embed_all += matches_embed
+                    total_embed_all += total_embed
+                    matches_classif, total_classif = calculate_accuracy_classification(outputs[1], targets)
+                    matches_classif_all += matches_classif
+                    total_classif_all += total_classif
+                test_accuracy_embed = matches_embed_all * 1.0 / total_embed_all
+                test_accuracy_classif = matches_classif_all * 1.0 / total_classif_all
+                print("Test embedding accuracy at step " + str(step) + " is: " + str(test_accuracy_embed))
+                print("Test classification accuracy at step " + str(step) + " is: " + str(test_accuracy_classif))
+                if average_loss_overall < least_loss or test_accuracy_classif > best_accuracy:
+                    least_loss = average_loss_overall
+                    best_accuracy = test_accuracy_classif
                     torch.save({
                         'epoch': epoch,
                         'model_state_dict': model.state_dict(),
