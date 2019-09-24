@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 from conllu import parse
 from torch.utils.data import Dataset
 
-f_sensekey2synset = "/home/lenovo/dev/neural-wsd/data/sensekey2synset.pkl"
+f_sensekey2synset = "C:\Work\dev\Session-2A\Data\sensekey2synset.pkl"
 sensekey2synset = pickle.load(open(f_sensekey2synset, "rb"))
 CUSTOM_FIELDS = ('form', 'lemma', 'pos', 'synsets')
 
@@ -41,13 +41,14 @@ class WSDataset(Dataset):
         # Note that we are working with lemmas for the input, not the word forms
         inputs = [self.src2id[lemma] if lemma in self.src2id
                   else self.src2id["<UNK>"] for lemma in sample.lemmas]
-        targets, neg_targets, targets_labels, mask, lengths_labels = [], [], [], [], []
+        targets_embed, neg_targets, targets_classify, mask, lengths_labels = [], [], [], [], []
         for i, label in enumerate(sample.synsets):
-            target, neg_target, = torch.zeros(self.embeddings_dim), torch.zeros(self.embeddings_dim)
+            target_embed, neg_target, target_classify = \
+                torch.zeros(self.embeddings_dim), torch.zeros(self.embeddings_dim), torch.zeros(self.max_labels)
             if label == "_":
                 mask.append(False)
                 lengths_labels.append(0)
-                targets_labels.append(-1)
+                targets_classify.append(-1)
             else:
                 mask.append(True)
                 lemma_pos = sample.lemmas[i] + "-" + POS_MAP[sample.pos[i]] # e.g. "bear-n"
@@ -58,9 +59,10 @@ class WSDataset(Dataset):
                 for synset in these_synsets:
                     if synset in self.src2id:
                         synset_embedding = torch.Tensor(self.embeddings[self.src2id[synset]])
-                        target += synset_embedding
-                targets_labels.append(self.lemma2synsets[lemma_pos].index(random.choice(these_synsets)))
-                target /= num_labels
+                        target_embed += synset_embedding
+                        # target_classify[self.lemma2synsets[lemma_pos].index(synset)] = 1.0
+                targets_classify.append(self.lemma2synsets[lemma_pos].index(random.choice(these_synsets)))
+                target_embed /= num_labels
                 lengths_labels.append(len(all_synsets))
                 # Pick negative targets too
                 # Copy the list of synsets, so that we don't change the dict
@@ -80,17 +82,18 @@ class WSDataset(Dataset):
                     else:
                         neg_options.remove(neg_synset)
                 neg_target = torch.Tensor(self.embeddings[self.src2id[neg_synset]])
-            targets.append(target)
+            targets_embed.append(target_embed)
             neg_targets.append(neg_target)
+            # targets_classify.append(target_classify)
         data = {"lemmas": sample.lemmas,
                 "length": sample.length,
                 "lengths_labels": torch.tensor(lengths_labels, dtype=torch.long),
                 "pos": sample.pos,
                 "synsets": sample.synsets,
                 "inputs": torch.tensor(inputs, dtype=torch.long),
-                "targets": torch.stack(targets).clone().detach(),
+                "targets_embed": torch.stack(targets_embed).clone().detach(),
                 "neg_targets": torch.stack(neg_targets).clone().detach(),
-                "targets_labels": torch.tensor(targets_labels, dtype=torch.long),
+                "targets_classify": torch.tensor(targets_classify, dtype=torch.long),
                 "mask": torch.tensor(mask, dtype=torch.bool)}
         return data
 
