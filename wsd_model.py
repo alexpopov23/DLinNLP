@@ -18,7 +18,7 @@ class WSDModel(nn.Module):
         self.hidden_layers = hidden_layers
         self.hidden_dim = hidden_dim
         self.word_embeddings = nn.Embedding.from_pretrained(embedding_weights,
-                                                            freeze=False)
+                                                            freeze=True)
         self.lstm = nn.LSTM(embeddings_dim,
                             hidden_dim,
                             hidden_layers,

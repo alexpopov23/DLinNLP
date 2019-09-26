@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 from conllu import parse
 from torch.utils.data import Dataset
 
-f_sensekey2synset = "C:\Work\dev\Session-2A\Data\sensekey2synset.pkl"
+f_sensekey2synset = "/home/lenovo/dev/neural-wsd/data/sensekey2synset.pkl"
 sensekey2synset = pickle.load(open(f_sensekey2synset, "rb"))
 CUSTOM_FIELDS = ('form', 'lemma', 'pos', 'synsets')
 

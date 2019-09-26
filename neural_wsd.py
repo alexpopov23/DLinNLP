@@ -2,9 +2,42 @@ import argparse
 import numpy
 import torch
 import os
+import sys
 
+from auxiliary import Logger
 from data_ops import WSDataset, load_embeddings, get_wordnet_lexicon
 from wsd_model import WSDModel, calculate_accuracy_embedding, calculate_accuracy_classification
+
+def eval_loop(data_loader, model, output_layers):
+    matches_embed_all, total_embed_all = 0, 0
+    matches_classify_all, total_classify_all = 0, 0
+    for eval_data in data_loader:
+        lemmas = numpy.asarray(eval_data['lemmas']).transpose()[eval_data["mask"]]
+        synsets = numpy.asarray(eval_data['synsets']).transpose()[eval_data["mask"]]
+        pos = numpy.asarray(eval_data['pos']).transpose()[eval_data["mask"]]
+        targets_classify = torch.from_numpy(numpy.asarray(eval_data["targets_classify"])[eval_data["mask"]])
+        outputs = model(eval_data["inputs"], eval_data["length"], eval_data["mask"], lemmas, pos)
+        accuracy_embed, accuracy_classify = 0.0, 0.0
+        if "embed_wsd" in output_layers:
+            matches_embed, total_embed = calculate_accuracy_embedding(outputs["embed_wsd"],
+                                                                      lemmas,
+                                                                      pos,
+                                                                      synsets,
+                                                                      lemma2synsets,
+                                                                      embeddings,
+                                                                      src2id,
+                                                                      pos_filter=True)
+            matches_embed_all += matches_embed
+            total_embed_all += total_embed
+            accuracy_embed = matches_embed_all * 1.0 / total_embed_all
+        if "classify_wsd" in output_layers:
+            matches_classify, total_classify = calculate_accuracy_classification(
+                outputs["classify_wsd"].detach().numpy(),
+                targets_classify.detach().numpy())
+            matches_classify_all += matches_classify
+            total_classify_all += total_classify
+            accuracy_classify = matches_classify_all * 1.0 / total_classify_all
+    return accuracy_embed, accuracy_classify
 
 if __name__ == "__main__":
 
@@ -75,10 +108,16 @@ if __name__ == "__main__":
     save_path = args.save_path
     f_train = args.train_data_path
     f_dev = args.dev_data_path
+    f_test = args.test_data_path
     trainset = WSDataset(f_train, src2id, embeddings, embedding_dim, max_labels, lemma2synsets)
     devset = WSDataset(f_dev, src2id, embeddings, embedding_dim, max_labels, lemma2synsets)
+    testset = WSDataset(f_test, src2id, embeddings, embedding_dim, max_labels, lemma2synsets)
+
+    # Redirect print statements to both terminal and logfile
+    sys.stdout = Logger(os.path.join(save_path, "results.txt"))
 
     # Get model parameters
+    output_layers = [str.strip(layer) for layer in args.output_layers.split(",")]
     alpha = float(args.alpha)
     batch_size = int(args.batch_size)
     hiden_neurons = int(args.n_hidden_neurons)
@@ -89,93 +128,68 @@ if __name__ == "__main__":
     # Construct data loaders for this specific model
     trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True)
     devloader = torch.utils.data.DataLoader(devset, batch_size=len(devset.data), shuffle=False)
+    testloader = torch.utils.data.DataLoader(testset, batch_size=len(testset.data), shuffle=False)
 
     # Construct the model
-    model = WSDModel(embedding_dim, embeddings, hiden_neurons, hiden_layers, dropout,
-                     [str.strip(layer) for layer in args.output_layers.split(",")], lemma2synsets)
+    model = WSDModel(embedding_dim, embeddings, hiden_neurons, hiden_layers, dropout, output_layers, lemma2synsets)
     loss_func_embed = torch.nn.MSELoss()
     loss_func_classify = torch.nn.CrossEntropyLoss(ignore_index=-100)
     # loss_func_classify = torch.nn.BCEWithLogitsLoss()
     optimizer = torch.optim.Adam(model.parameters())
     # optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate)
 
-    # Train loop
-    least_loss = 0.0
-    best_accuracy = 0.0
-    eval_at = 10
-    for epoch in range(100):
-        print("***** Start of epoch " + str(epoch) + " *****")
-        average_loss_embed, average_loss_classify, average_loss_overall = 0.0, 0.0, 0.0
-        for step, data in enumerate(trainloader):
-            model.train()
-            optimizer.zero_grad()
-            lemmas = numpy.asarray(data['lemmas']).transpose()[data["mask"]]
-            pos = numpy.asarray(data['pos']).transpose()[data["mask"]]
-            synsets = numpy.asarray(data['synsets']).transpose()[data["mask"]]
-            lengths_labels = numpy.asarray(data["lengths_labels"])[data["mask"]]
-            outputs = model(data["inputs"], data["length"], data["mask"], lemmas, pos)
-            mask = torch.reshape(data["mask"], (data["mask"].shape[0], data["mask"].shape[1], 1))
-            loss = 0.0
-            # Calculate loss for the context embedding method
-            if "embed_wsd" in args.output_layers:
-                targets_embed = torch.masked_select(data["targets_embed"], mask)
-                targets_embed = targets_embed.view(-1, embedding_dim)
-                neg_targets = torch.masked_select(data["neg_targets"], mask)
-                neg_targets = neg_targets.view(-1, embedding_dim)
-                # targets_classify = targets_classify.view(-1, max_labels)
-                loss_embed = alpha * loss_func_embed(outputs["embed_wsd"], targets_embed) + \
-                             (1 - alpha) * (1 - loss_func_embed(outputs["embed_wsd"], neg_targets))
-                loss += loss_embed
-                average_loss_embed += loss_embed
-            # Calculate loss for the classification method
-            if "classify_wsd" in args.output_layers:
-                targets_classify = torch.from_numpy(numpy.asarray(data["targets_classify"])[data["mask"]])
-                loss_classify = loss_func_classify(outputs["classify_wsd"],
-                                                   targets_classify)
-                loss += loss_classify
-                average_loss_classify += loss_classify
-            # loss = loss_embed + loss_classify
-            loss.backward()
-            optimizer.step()
-            # Eval loop during training
-            if step % eval_at == 0:
-                model.eval()
-                print("Step " + str(step))
-                if "embed_wsd" in args.output_layers:
-                    matches_embed, total_embed = calculate_accuracy_embedding(outputs["embed_wsd"],
-                                                                              lemmas,
-                                                                              pos,
-                                                                              synsets,
-                                                                              lemma2synsets,
-                                                                              embeddings,
-                                                                              src2id,
-                                                                              pos_filter=True)
-                    train_accuracy_embed = matches_embed * 1.0 / total_embed
-                    print("Training embedding accuracy at step " + str(step) + ": " + str(train_accuracy_embed))
-                    average_loss_embed /= (eval_at if step != 0 else 1)
-                    print("Average embedding loss (training) is: " + str(average_loss_embed.detach().numpy()))
-                    average_loss_overall += average_loss_embed.detach().numpy()
-                if "classify_wsd" in args.output_layers:
-                    matches_classify, total_classify = calculate_accuracy_classification(outputs["classify_wsd"].detach().numpy(),
-                                                                                         targets_classify.detach().numpy())
-                    train_accuracy_classify = matches_classify * 1.0 / total_classify
+    # Eval loop
+    if args.mode == "evaluate":
+        model.load_state_dict(torch.load(args.save_path))
+        model.eval()
+        test_accuracy_embed, test_accuracy_classify = eval_loop(testloader, model, output_layers)
+        print("Test embedding accuracy: " + str(test_accuracy_embed))
+        print("Test classification accuracy: " + str(test_accuracy_classify))
 
-                    print("Training classification accuracy at step " + str(step) + ": " + str(train_accuracy_classify))
-                    average_loss_classify /= (eval_at if step != 0 else 1)
-                    print("Average classification loss (training) is: " + str(average_loss_classify.detach().numpy()))
-                    average_loss_overall += average_loss_classify.detach().numpy()
-                average_loss_embed, average_loss_classif = 0.0, 0.0
-                print("Average overall loss (training) is: " + str(average_loss_overall))
-                # Loop over the eval data
-                matches_embed_all, total_embed_all = 0, 0
-                matches_classify_all, total_classify_all = 0, 0
-                for eval_data in devloader:
-                    lemmas = numpy.asarray(eval_data['lemmas']).transpose()[eval_data["mask"]]
-                    synsets = numpy.asarray(eval_data['synsets']).transpose()[eval_data["mask"]]
-                    pos = numpy.asarray(eval_data['pos']).transpose()[eval_data["mask"]]
-                    targets_classify = torch.from_numpy(numpy.asarray(eval_data["targets_classify"])[eval_data["mask"]])
-                    outputs = model(eval_data["inputs"], eval_data["length"], eval_data["mask"], lemmas, pos)
-                    if "embed_wsd" in args.output_layers:
+    # Train loop
+    else:
+        least_loss = 0.0
+        best_accuracy_embed, best_accuracy_classify = 0.0, 0.0
+        eval_at = 100
+        for epoch in range(100):
+            print("***** Start of epoch " + str(epoch) + " *****")
+            average_loss_embed, average_loss_classify, average_loss_overall = 0.0, 0.0, 0.0
+            for step, data in enumerate(trainloader):
+                model.train()
+                optimizer.zero_grad()
+                lemmas = numpy.asarray(data['lemmas']).transpose()[data["mask"]]
+                pos = numpy.asarray(data['pos']).transpose()[data["mask"]]
+                synsets = numpy.asarray(data['synsets']).transpose()[data["mask"]]
+                lengths_labels = numpy.asarray(data["lengths_labels"])[data["mask"]]
+                outputs = model(data["inputs"], data["length"], data["mask"], lemmas, pos)
+                mask = torch.reshape(data["mask"], (data["mask"].shape[0], data["mask"].shape[1], 1))
+                loss = 0.0
+                # Calculate loss for the context embedding method
+                if "embed_wsd" in output_layers:
+                    targets_embed = torch.masked_select(data["targets_embed"], mask)
+                    targets_embed = targets_embed.view(-1, embedding_dim)
+                    neg_targets = torch.masked_select(data["neg_targets"], mask)
+                    neg_targets = neg_targets.view(-1, embedding_dim)
+                    # targets_classify = targets_classify.view(-1, max_labels)
+                    loss_embed = alpha * loss_func_embed(outputs["embed_wsd"], targets_embed) + \
+                                 (1 - alpha) * (1 - loss_func_embed(outputs["embed_wsd"], neg_targets))
+                    loss += loss_embed
+                    average_loss_embed += loss_embed
+                # Calculate loss for the classification method
+                if "classify_wsd" in output_layers:
+                    targets_classify = torch.from_numpy(numpy.asarray(data["targets_classify"])[data["mask"]])
+                    loss_classify = loss_func_classify(outputs["classify_wsd"],
+                                                       targets_classify)
+                    loss += loss_classify
+                    average_loss_classify += loss_classify
+                # loss = loss_embed + loss_classify
+                loss.backward()
+                optimizer.step()
+                # Eval loop during training
+                if step % eval_at == 0:
+                    model.eval()
+                    print("Step " + str(step))
+                    if "embed_wsd" in output_layers:
                         matches_embed, total_embed = calculate_accuracy_embedding(outputs["embed_wsd"],
                                                                                   lemmas,
                                                                                   pos,
@@ -184,26 +198,50 @@ if __name__ == "__main__":
                                                                                   embeddings,
                                                                                   src2id,
                                                                                   pos_filter=True)
-                        matches_embed_all += matches_embed
-                        total_embed_all += total_embed
-                        test_accuracy_embed = matches_embed_all * 1.0 / total_embed_all
-                        print("Test embedding accuracy at step " + str(step) + " is: " + str(test_accuracy_embed))
-                    if "classify_wsd" in args.output_layers:
+                        train_accuracy_embed = matches_embed * 1.0 / total_embed
+                        print("Training embedding accuracy: " + str(train_accuracy_embed))
+                        average_loss_embed /= (eval_at if step != 0 else 1)
+                        print("Average embedding loss (training): " + str(average_loss_embed.detach().numpy()))
+                        average_loss_overall += average_loss_embed.detach().numpy()
+                    if "classify_wsd" in output_layers:
                         matches_classify, total_classify = calculate_accuracy_classification(outputs["classify_wsd"].detach().numpy(),
                                                                                              targets_classify.detach().numpy())
-                        matches_classify_all += matches_classify
-                        total_classify_all += total_classify
-                        test_accuracy_classify = matches_classify_all * 1.0 / total_classify_all
-                        print("Test classification accuracy at step " + str(step) + " is: " + str(test_accuracy_classify))
-                # if average_loss_overall < least_loss or test_accuracy_classif > best_accuracy:
-                #     least_loss = average_loss_overall
-                #     best_accuracy = test_accuracy_classif
-                #     torch.save({
-                #         'epoch': epoch,
-                #         'model_state_dict': model.state_dict(),
-                #         'optimizer_state_dict': optimizer.state_dict(),
-                #         'loss': loss,
-                #     }, os.path.join(save_path, "epoch" + str(epoch) + "step" + str(step)))
+                        train_accuracy_classify = matches_classify * 1.0 / total_classify
 
-    # Evaluation loop on the test data
+                        print("Training classification accuracy: " + str(train_accuracy_classify))
+                        average_loss_classify /= (eval_at if step != 0 else 1)
+                        print("Average classification loss (training): " + str(average_loss_classify.detach().numpy()))
+                        average_loss_overall += average_loss_classify.detach().numpy()
+                    print("Average overall loss (training): " + str(average_loss_overall))
+                    average_loss_embed, average_loss_classif, average_loss_overall = 0.0, 0.0, 0.0
+
+                    # Loop over the dev dataset
+                    dev_accuracy_embed, dev_accuracy_classify = eval_loop(devloader, model, output_layers)
+                    print("Dev embedding accuracy: " + str(dev_accuracy_embed))
+                    print("Dev classification accuracy: " + str(dev_accuracy_classify))
+                    best_result = False
+                    if dev_accuracy_embed > best_accuracy_embed:
+                        for file in os.listdir(save_path):
+                            if "embed_wsd" in file:
+                                os.remove(os.path.join(save_path, file))
+                        torch.save(model.state_dict(), os.path.join(save_path, "epoch" + str(epoch) + "-step" + str(step)
+                                                                    + "-embed_wsd=" + str(dev_accuracy_embed)[:7] + ".pt"))
+
+                        best_accuracy_embed = dev_accuracy_embed
+                        best_result = True
+                    if dev_accuracy_classify > best_accuracy_classify:
+                        for file in os.listdir(save_path):
+                            if "classify_wsd" in file:
+                                os.remove(os.path.join(save_path, file))
+                        torch.save(model.state_dict(), os.path.join(save_path, "epoch" + str(epoch) + "-step" + str(step)
+                                                                    + "-classify_wsd=" + str(dev_accuracy_classify)[:7] + ".pt"))
+                        best_accuracy_classify = dev_accuracy_classify
+                        best_result = True
+                    if best_result is True:
+                        # Eval on the test dataset as well
+                        test_accuracy_embed, test_accuracy_classify = eval_loop(testloader, model, output_layers)
+                        print("Test embedding accuracy: " + str(test_accuracy_embed))
+                        print("Test classification accuracy: " + str(test_accuracy_classify))
+                sys.stdout.flush()
+
     print("This is the end.")
