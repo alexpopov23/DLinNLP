@@ -33,6 +33,7 @@ class WSDModel(nn.Module):
             for lemma, synsets in lemma2synsets.items():
                 lemma2layers[lemma] = nn.Linear(2*hidden_dim, len(synsets))
             self.classifiers = nn.Sequential(lemma2layers)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, X, X_lengths, mask, lemmas, pos):
         X = self.word_embeddings(X) # shape is [batch_size,max_length,embeddings_dim]
@@ -54,12 +55,12 @@ class WSDModel(nn.Module):
         outputs = {}
         for layer in self.output_layers:
             if layer == "embed_wsd":
-                outputs["embed_wsd"] = self.output_emb(X)
+                outputs["embed_wsd"] = self.dropout(self.output_emb(X))
             elif layer == "classify_wsd":
                 outputs_classif = []
                 for i, x in enumerate(torch.unbind(X)):
                     lemma_pos = lemmas[i] + "-" + POS_MAP[pos[i]]
-                    output_classif = self.classifiers._modules[lemma_pos](x)
+                    output_classif = self.dropout(self.classifiers._modules[lemma_pos](x))
                     outputs_classif.append(output_classif)
                 outputs_classif = pad_sequence(outputs_classif, batch_first=True, padding_value=-100)
                 outputs["classify_wsd"] = outputs_classif

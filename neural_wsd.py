@@ -242,6 +242,5 @@ if __name__ == "__main__":
                         test_accuracy_embed, test_accuracy_classify = eval_loop(testloader, model, output_layers)
                         print("Test embedding accuracy: " + str(test_accuracy_embed))
                         print("Test classification accuracy: " + str(test_accuracy_classify))
-                sys.stdout.flush()
 
     print("This is the end.")
