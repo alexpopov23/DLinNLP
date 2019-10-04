@@ -8,11 +8,19 @@ from auxiliary import Logger
 from data_ops import WSDataset, load_embeddings, get_wordnet_lexicon
 from wsd_model import WSDModel, calculate_accuracy_embedding, calculate_accuracy_classification
 
-def eval_loop(data_loader, model, output_layers):
+def disambiguate_by_default(lemmas, known_lemmas):
+    default_disambiguations = []
+    for i, lemma in enumerate(lemmas):
+        if lemma not in known_lemmas:
+            default_disambiguations.append(i)
+    return default_disambiguations
+
+def eval_loop(data_loader, known_lemmas, model, output_layers):
     matches_embed_all, total_embed_all = 0, 0
     matches_classify_all, total_classify_all = 0, 0
     for eval_data in data_loader:
-        lemmas = numpy.asarray(eval_data['lemmas']).transpose()[eval_data["mask"]]
+        lemmas = numpy.asarray(eval_data['lemmas_pos']).transpose()[eval_data["mask"]]
+        default_disambiguations = disambiguate_by_default(lemmas, known_lemmas)
         synsets = numpy.asarray(eval_data['synsets']).transpose()[eval_data["mask"]]
         pos = numpy.asarray(eval_data['pos']).transpose()[eval_data["mask"]]
         targets_classify = torch.from_numpy(numpy.asarray(eval_data["targets_classify"])[eval_data["mask"]])
@@ -21,7 +29,6 @@ def eval_loop(data_loader, model, output_layers):
         if "embed_wsd" in output_layers:
             matches_embed, total_embed = calculate_accuracy_embedding(outputs["embed_wsd"],
                                                                       lemmas,
-                                                                      pos,
                                                                       synsets,
                                                                       lemma2synsets,
                                                                       embeddings,
@@ -33,7 +40,8 @@ def eval_loop(data_loader, model, output_layers):
         if "classify_wsd" in output_layers:
             matches_classify, total_classify = calculate_accuracy_classification(
                 outputs["classify_wsd"].detach().numpy(),
-                targets_classify.detach().numpy())
+                targets_classify.detach().numpy(),
+                default_disambiguations)
             matches_classify_all += matches_classify
             total_classify_all += total_classify
             accuracy_classify = matches_classify_all * 1.0 / total_classify_all
@@ -157,7 +165,8 @@ if __name__ == "__main__":
             for step, data in enumerate(trainloader):
                 model.train()
                 optimizer.zero_grad()
-                lemmas = numpy.asarray(data['lemmas']).transpose()[data["mask"]]
+                lemmas = numpy.asarray(data['lemmas_pos']).transpose()[data["mask"]]
+                default_disambiguations = disambiguate_by_default(lemmas, trainset.known_lemmas)
                 pos = numpy.asarray(data['pos']).transpose()[data["mask"]]
                 synsets = numpy.asarray(data['synsets']).transpose()[data["mask"]]
                 lengths_labels = numpy.asarray(data["lengths_labels"])[data["mask"]]
@@ -192,7 +201,6 @@ if __name__ == "__main__":
                     if "embed_wsd" in output_layers:
                         matches_embed, total_embed = calculate_accuracy_embedding(outputs["embed_wsd"],
                                                                                   lemmas,
-                                                                                  pos,
                                                                                   synsets,
                                                                                   lemma2synsets,
                                                                                   embeddings,
@@ -205,7 +213,8 @@ if __name__ == "__main__":
                         average_loss_overall += average_loss_embed.detach().numpy()
                     if "classify_wsd" in output_layers:
                         matches_classify, total_classify = calculate_accuracy_classification(outputs["classify_wsd"].detach().numpy(),
-                                                                                             targets_classify.detach().numpy())
+                                                                                             targets_classify.detach().numpy(),
+                                                                                             default_disambiguations)
                         train_accuracy_classify = matches_classify * 1.0 / total_classify
 
                         print("Training classification accuracy: " + str(train_accuracy_classify))
@@ -216,7 +225,7 @@ if __name__ == "__main__":
                     average_loss_embed, average_loss_classif, average_loss_overall = 0.0, 0.0, 0.0
 
                     # Loop over the dev dataset
-                    dev_accuracy_embed, dev_accuracy_classify = eval_loop(devloader, model, output_layers)
+                    dev_accuracy_embed, dev_accuracy_classify = eval_loop(devloader, trainset.known_lemmas, model, output_layers)
                     print("Dev embedding accuracy: " + str(dev_accuracy_embed))
                     print("Dev classification accuracy: " + str(dev_accuracy_classify))
                     best_result = False
@@ -239,7 +248,7 @@ if __name__ == "__main__":
                         best_result = True
                     if best_result is True:
                         # Eval on the test dataset as well
-                        test_accuracy_embed, test_accuracy_classify = eval_loop(testloader, model, output_layers)
+                        test_accuracy_embed, test_accuracy_classify = eval_loop(testloader, trainset.known_lemmas, model, output_layers)
                         print("Test embedding accuracy: " + str(test_accuracy_embed))
                         print("Test classification accuracy: " + str(test_accuracy_classify))
 

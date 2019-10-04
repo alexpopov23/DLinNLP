@@ -59,21 +59,22 @@ class WSDModel(nn.Module):
             elif layer == "classify_wsd":
                 outputs_classif = []
                 for i, x in enumerate(torch.unbind(X)):
-                    lemma_pos = lemmas[i] + "-" + POS_MAP[pos[i]]
-                    output_classif = self.dropout(self.classifiers._modules[lemma_pos](x))
+                    # lemma_pos = lemmas[i] + "-" + POS_MAP[pos[i]]
+                    output_classif = self.dropout(self.classifiers._modules[lemmas[i]](x))
                     outputs_classif.append(output_classif)
                 outputs_classif = pad_sequence(outputs_classif, batch_first=True, padding_value=-100)
                 outputs["classify_wsd"] = outputs_classif
         return outputs
 
 
-def calculate_accuracy_embedding(outputs, lemmas, pos, gold_synsets, lemma2synsets, embeddings, src2id, pos_filter=True):
+def calculate_accuracy_embedding(outputs, lemmas, gold_synsets, lemma2synsets, embeddings, src2id, pos_filter=True):
     matches, total = 0, 0
     for i, output in enumerate(torch.unbind(outputs)):
-        if pos_filter:
-            lemma = lemmas[i] + "-" + POS_MAP[pos[i]]
-        else:
-            lemma = lemmas[i]
+        # if pos_filter:
+        #     lemma = lemmas[i] + "-" + POS_MAP[pos[i]]
+        # else:
+        #     lemma = lemmas[i]
+        lemma = lemmas[i]
         possible_synsets = lemma2synsets[lemma]
         synset_choice, max_similarity = "", -100.0
         for synset in possible_synsets:
@@ -95,9 +96,12 @@ def calculate_accuracy_embedding(outputs, lemmas, pos, gold_synsets, lemma2synse
 #     total = comparison_tensor.shape[0]
 #     return matches, total
 
-def calculate_accuracy_classification(outputs, targets):
+def calculate_accuracy_classification(outputs, targets, default_disambiguations):
     matches, total = 0, 0
     choices = numpy.argmax(outputs, axis=1)
+    # This loop makes sure that we take the 1st sense heuristics for lemmas unseen in training
+    for i in default_disambiguations:
+        choices[i] = 0
     for i, choice in enumerate(choices):
         if targets[i] == choice:
             matches += 1
