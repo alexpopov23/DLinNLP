@@ -1,29 +1,41 @@
+import collections
+
+import numpy
 import torch
 import torch.nn as nn
 
 from sklearn.metrics.pairwise import cosine_similarity
+from torch.nn.utils.rnn import pad_sequence
 
 POS_MAP = {"NOUN": "n", "VERB": "v", "ADJ": "a", "ADV": "r"}
 
 class WSDModel(nn.Module):
 
-    def __init__(self, embeddings_dim, embedding_weights, hidden_dim,
-                 hidden_layers, dropout):
+    def __init__(self, embeddings_dim, embedding_weights, hidden_dim, hidden_layers, dropout,
+                 output_layers=["embed_wsd"], lemma2synsets=None):
         super(WSDModel, self).__init__()
+        self.output_layers = output_layers
         self.hidden_layers = hidden_layers
         self.hidden_dim = hidden_dim
         self.word_embeddings = nn.Embedding.from_pretrained(embedding_weights,
-                                                            freeze=False)
+                                                            freeze=True)
         self.lstm = nn.LSTM(embeddings_dim,
                             hidden_dim,
                             hidden_layers,
                             bidirectional=True,
                             batch_first=True,
                             dropout=dropout)
-        # We want output with the size of the lemma&synset embeddings
-        self.output = nn.Linear(2*hidden_dim, embeddings_dim)
+        if "embed_wsd" in self.output_layers:
+            # We want output with the size of the lemma&synset embeddings
+            self.output_emb = nn.Linear(2*hidden_dim, embeddings_dim)
+        if "classify_wsd" in self.output_layers:
+            lemma2layers = collections.OrderedDict()
+            for lemma, synsets in lemma2synsets.items():
+                lemma2layers[lemma] = nn.Linear(2*hidden_dim, len(synsets))
+            self.classifiers = nn.Sequential(lemma2layers)
+        self.dropout = nn.Dropout(dropout)
 
-    def forward(self, X, X_lengths, mask):
+    def forward(self, X, X_lengths, mask, lemmas, pos):
         X = self.word_embeddings(X) # shape is [batch_size,max_length,embeddings_dim]
         X = torch.nn.utils.rnn.pack_padded_sequence(X,
                                                     X_lengths,
@@ -40,17 +52,29 @@ class WSDModel(nn.Module):
         X = torch.masked_select(X, mask)
         # masked_select flattens the tensor, but we need it as matrix
         X = X.view(-1, 2 * self.hidden_dim) # shape is [num_labels, 2*hidden_dim]
-        outputs = self.output(X)
+        outputs = {}
+        for layer in self.output_layers:
+            if layer == "embed_wsd":
+                outputs["embed_wsd"] = self.dropout(self.output_emb(X))
+            elif layer == "classify_wsd":
+                outputs_classif = []
+                for i, x in enumerate(torch.unbind(X)):
+                    # lemma_pos = lemmas[i] + "-" + POS_MAP[pos[i]]
+                    output_classif = self.dropout(self.classifiers._modules[lemmas[i]](x))
+                    outputs_classif.append(output_classif)
+                outputs_classif = pad_sequence(outputs_classif, batch_first=True, padding_value=-100)
+                outputs["classify_wsd"] = outputs_classif
         return outputs
 
 
-def calculate_accuracy(outputs, lemmas, pos, gold_synsets, lemma2synsets, embeddings, src2id, pos_filter=True):
+def calculate_accuracy_embedding(outputs, lemmas, gold_synsets, lemma2synsets, embeddings, src2id, pos_filter=True):
     matches, total = 0, 0
     for i, output in enumerate(torch.unbind(outputs)):
-        if pos_filter:
-            lemma = lemmas[i] + "-" + POS_MAP[pos[i]]
-        else:
-            lemma = lemmas[i]
+        # if pos_filter:
+        #     lemma = lemmas[i] + "-" + POS_MAP[pos[i]]
+        # else:
+        #     lemma = lemmas[i]
+        lemma = lemmas[i]
         possible_synsets = lemma2synsets[lemma]
         synset_choice, max_similarity = "", -100.0
         for synset in possible_synsets:
@@ -61,6 +85,25 @@ def calculate_accuracy(outputs, lemmas, pos, gold_synsets, lemma2synsets, embedd
                 max_similarity = cos_sim
                 synset_choice = synset
         if synset_choice in gold_synsets[i].split(","):
+            matches += 1
+        total += 1
+    return matches, total
+
+# def calculate_accuracy_classification(outputs, targets):
+#     choices = torch.argmax(outputs, dim=1)
+#     comparison_tensor = torch.eq(choices, targets)
+#     matches = torch.sum(comparison_tensor).numpy()
+#     total = comparison_tensor.shape[0]
+#     return matches, total
+
+def calculate_accuracy_classification(outputs, targets, default_disambiguations):
+    matches, total = 0, 0
+    choices = numpy.argmax(outputs, axis=1)
+    # This loop makes sure that we take the 1st sense heuristics for lemmas unseen in training
+    for i in default_disambiguations:
+        choices[i] = 0
+    for i, choice in enumerate(choices):
+        if targets[i] == choice:
             matches += 1
         total += 1
     return matches, total
