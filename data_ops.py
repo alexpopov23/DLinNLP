@@ -182,8 +182,9 @@ def transform_original2tsv(path_to_dataset, output_path):
         print(f_name)
         with open(os.path.join(path_to_dataset, f_name), "r") as f:
         # context = ET.parse(os.path.join(path_to_dataset, f_name)).getroot().get("context")
-            it = itertools.chain('<root>', f, '</root>')
-            root = ET.fromstringlist(it)
+        #     it = itertools.chain('<root>', f, '</root>')
+            f_contents = f.read()
+            root = ET.fromstring('<root>\n' + f_contents + '\n</root>')
             paragraphs = root.get("contextfile").get("context")
             for p in paragraphs:
                 sentences = p.findall("s")
