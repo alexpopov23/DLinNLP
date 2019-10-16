@@ -41,7 +41,12 @@ def eval_loop(data_loader, known_lemmas, model, output_layers):
             matches_classify, total_classify = calculate_accuracy_classification(
                 outputs["classify_wsd"].detach().numpy(),
                 targets_classify.detach().numpy(),
-                default_disambiguations)
+                default_disambiguations,
+                lemmas,
+                synsets,
+                lemma2synsets,
+                synset2id,
+                single_softmax)
             matches_classify_all += matches_classify
             total_classify_all += total_classify
             accuracy_classify = matches_classify_all * 1.0 / total_classify_all
@@ -81,6 +86,9 @@ if __name__ == "__main__":
     parser.add_argument('-mode', dest='mode', required=False, default="train",
                         help="Is this is a training, evaluation or application run? Options: train, evaluation, "
                              "application")
+    parser.add_argument('-n_classifiers', dest='n_classifiers', required=False, default="multiple",
+                        help="Shoud there be a separate classification layer per lemma, or should the model use a "
+                             "single layer for all lemmas? Options: single, multiple")
     parser.add_argument('-n_hidden_neurons', dest='n_hidden_neurons', required=False, default=200,
                         help='Size of the hidden layer.')
     parser.add_argument('-n_hidden_layers', dest='n_hidden_layers', required=False, default=1,
@@ -111,15 +119,20 @@ if __name__ == "__main__":
     embedding_dim = embeddings.shape[1]
     lexicon_path = args.lexicon_path
     lemma2synsets, max_labels = get_wordnet_lexicon(lexicon_path, args.pos_filter)
+    single_softmax = True if args.n_classifiers == "single" else False
 
     # Get the training/dev/testing data
     save_path = args.save_path
     f_train = args.train_data_path
     f_dev = args.dev_data_path
     f_test = args.test_data_path
-    trainset = WSDataset(f_train, src2id, embeddings, embedding_dim, max_labels, lemma2synsets)
-    devset = WSDataset(f_dev, src2id, embeddings, embedding_dim, max_labels, lemma2synsets)
-    testset = WSDataset(f_test, src2id, embeddings, embedding_dim, max_labels, lemma2synsets)
+    trainset = WSDataset(f_train, src2id, embeddings, embedding_dim, max_labels, lemma2synsets, single_softmax)
+    if single_softmax is True:
+        synset2id = trainset.known_synsets
+    else:
+        synset2id = {}
+    devset = WSDataset(f_dev, src2id, embeddings, embedding_dim, max_labels, lemma2synsets, single_softmax, synset2id)
+    testset = WSDataset(f_test, src2id, embeddings, embedding_dim, max_labels, lemma2synsets, single_softmax, synset2id)
 
     # Redirect print statements to both terminal and logfile
     sys.stdout = Logger(os.path.join(save_path, "results.txt"))
@@ -139,7 +152,8 @@ if __name__ == "__main__":
     testloader = torch.utils.data.DataLoader(testset, batch_size=len(testset.data), shuffle=False)
 
     # Construct the model
-    model = WSDModel(embedding_dim, embeddings, hiden_neurons, hiden_layers, dropout, output_layers, lemma2synsets)
+    model = WSDModel(embedding_dim, embeddings, hiden_neurons, hiden_layers, dropout, output_layers, lemma2synsets,
+                     synset2id)
     loss_func_embed = torch.nn.MSELoss()
     loss_func_classify = torch.nn.CrossEntropyLoss(ignore_index=-100)
     # loss_func_classify = torch.nn.BCEWithLogitsLoss()
@@ -187,8 +201,7 @@ if __name__ == "__main__":
                 # Calculate loss for the classification method
                 if "classify_wsd" in output_layers:
                     targets_classify = torch.from_numpy(numpy.asarray(data["targets_classify"])[data["mask"]])
-                    loss_classify = loss_func_classify(outputs["classify_wsd"],
-                                                       targets_classify)
+                    loss_classify = loss_func_classify(outputs["classify_wsd"], targets_classify)
                     loss += loss_classify
                     average_loss_classify += loss_classify
                 # loss = loss_embed + loss_classify
@@ -212,9 +225,15 @@ if __name__ == "__main__":
                         print("Average embedding loss (training): " + str(average_loss_embed.detach().numpy()))
                         average_loss_overall += average_loss_embed.detach().numpy()
                     if "classify_wsd" in output_layers:
-                        matches_classify, total_classify = calculate_accuracy_classification(outputs["classify_wsd"].detach().numpy(),
-                                                                                             targets_classify.detach().numpy(),
-                                                                                             default_disambiguations)
+                        matches_classify, total_classify = calculate_accuracy_classification(
+                                outputs["classify_wsd"].detach().numpy(),
+                                targets_classify.detach().numpy(),
+                                default_disambiguations,
+                                lemmas,
+                                synsets,
+                                lemma2synsets,
+                                synset2id,
+                                single_softmax)
                         train_accuracy_classify = matches_classify * 1.0 / total_classify
 
                         print("Training classification accuracy: " + str(train_accuracy_classify))
