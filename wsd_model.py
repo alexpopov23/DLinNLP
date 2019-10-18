@@ -116,7 +116,7 @@ def calculate_accuracy_classification(outputs, targets, default_disambiguations,
     for i, choice in enumerate(choices):
         if single_softmax is True:
             if targets[i] == 0:
-                if lemma2synsets[lemmas[i]][0] == synsets[i]:
+                if lemma2synsets[lemmas[i]][0] in synsets[i].split(","):
                     matches += 1
             else:
                 permitted_synsets = lemma2synsets[lemmas[i]]
@@ -127,7 +127,7 @@ def calculate_accuracy_classification(outputs, targets, default_disambiguations,
                         if synset_activation > max:
                             max = synset_activation
                             max_synset = synset
-                if max_synset == synsets[i]:
+                if max_synset in synsets[i].split(","):
                     matches += 1
         elif targets[i] == choice:
             matches += 1
