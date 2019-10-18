@@ -33,7 +33,8 @@ class Sample():
 
 class WSDataset(Dataset):
 
-    def __init__(self, tsv_file, src2id, embeddings, embeddings_dim, max_labels, lemma2synsets):
+    def __init__(self, tsv_file, src2id, embeddings, embeddings_dim, max_labels, lemma2synsets, single_softmax,
+                 known_synsets=None):
         # Our data has some pretty long sentences, so we will set a large max length
         # Alternatively, can throw them out or truncate them
         self.src2id = src2id
@@ -43,6 +44,20 @@ class WSDataset(Dataset):
         self.lemma2synsets = lemma2synsets
         self.known_lemmas = set()
         self.data = self.parse_tsv(open(tsv_file, "r").read(), 300)
+        self.known_lemmas = sorted(self.known_lemmas)
+        self.single_softmax = single_softmax
+        if self.single_softmax is True:
+            if known_synsets is None:
+                self.known_synsets = {"UNKNOWN" : 0}
+                id = 1
+                for lemma in self.known_lemmas:
+                    if lemma in lemma2synsets:
+                        for synset in lemma2synsets[lemma]:
+                            if synset not in self.known_synsets:
+                                self.known_synsets[synset] = id
+                                id += 1
+            else:
+                self.known_synsets = known_synsets
 
     def __len__(self):
         return len(self.data)
@@ -76,8 +91,16 @@ class WSDataset(Dataset):
                         synset_embedding = torch.Tensor(self.embeddings[self.src2id[synset]])
                         target_embed += synset_embedding
                         # target_classify[self.lemma2synsets[lemma_pos].index(synset)] = 1.0
-                targets_classify.append(self.lemma2synsets[lemma_pos].index(random.choice(these_synsets)))
                 target_embed /= num_labels
+                # Either use separate softmax layers per lemma/LU, or use one large softmax for all senses
+                if self.single_softmax is True:
+                    synset = random.choice(these_synsets)
+                    if synset in self.known_synsets:
+                        targets_classify.append(self.known_synsets[synset])
+                    else:
+                        targets_classify.append(self.known_synsets["UNKNOWN"])
+                else:
+                    targets_classify.append(self.lemma2synsets[lemma_pos].index(random.choice(these_synsets)))
                 lengths_labels.append(len(all_synsets))
                 # Pick negative targets too
                 # Copy the list of synsets, so that we don't change the dict

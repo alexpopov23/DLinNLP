@@ -12,11 +12,12 @@ POS_MAP = {"NOUN": "n", "VERB": "v", "ADJ": "a", "ADV": "r"}
 class WSDModel(nn.Module):
 
     def __init__(self, embeddings_dim, embedding_weights, hidden_dim, hidden_layers, dropout,
-                 output_layers=["embed_wsd"], lemma2synsets=None):
+                 output_layers=["embed_wsd"], lemma2synsets=None, synsets2id={}):
         super(WSDModel, self).__init__()
         self.output_layers = output_layers
         self.hidden_layers = hidden_layers
         self.hidden_dim = hidden_dim
+        self.synsets2id = synsets2id
         self.word_embeddings = nn.Embedding.from_pretrained(embedding_weights,
                                                             freeze=True)
         self.lstm = nn.LSTM(embeddings_dim,
@@ -29,10 +30,13 @@ class WSDModel(nn.Module):
             # We want output with the size of the lemma&synset embeddings
             self.output_emb = nn.Linear(2*hidden_dim, embeddings_dim)
         if "classify_wsd" in self.output_layers:
-            lemma2layers = collections.OrderedDict()
-            for lemma, synsets in lemma2synsets.items():
-                lemma2layers[lemma] = nn.Linear(2*hidden_dim, len(synsets))
-            self.classifiers = nn.Sequential(lemma2layers)
+            if len(self.synsets2id) > 0:
+                self.output_classify = nn.Linear(2*hidden_dim, len(self.synsets2id))
+            else:
+                lemma2layers = collections.OrderedDict()
+                for lemma, synsets in lemma2synsets.items():
+                    lemma2layers[lemma] = nn.Linear(2*hidden_dim, len(synsets))
+                self.classifiers = nn.Sequential(lemma2layers)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, X, X_lengths, mask, lemmas, pos):
@@ -57,13 +61,16 @@ class WSDModel(nn.Module):
             if layer == "embed_wsd":
                 outputs["embed_wsd"] = self.dropout(self.output_emb(X))
             elif layer == "classify_wsd":
-                outputs_classif = []
-                for i, x in enumerate(torch.unbind(X)):
-                    # lemma_pos = lemmas[i] + "-" + POS_MAP[pos[i]]
-                    output_classif = self.dropout(self.classifiers._modules[lemmas[i]](x))
-                    outputs_classif.append(output_classif)
-                outputs_classif = pad_sequence(outputs_classif, batch_first=True, padding_value=-100)
-                outputs["classify_wsd"] = outputs_classif
+                if len(self.synsets2id) > 0:
+                    outputs["classify_wsd"] = self.dropout(self.output_classify(X))
+                else:
+                    outputs_classif = []
+                    for i, x in enumerate(torch.unbind(X)):
+                        # lemma_pos = lemmas[i] + "-" + POS_MAP[pos[i]]
+                        output_classif = self.dropout(self.classifiers._modules[lemmas[i]](x))
+                        outputs_classif.append(output_classif)
+                    outputs_classif = pad_sequence(outputs_classif, batch_first=True, padding_value=-100)
+                    outputs["classify_wsd"] = outputs_classif
         return outputs
 
 
@@ -96,14 +103,33 @@ def calculate_accuracy_embedding(outputs, lemmas, gold_synsets, lemma2synsets, e
 #     total = comparison_tensor.shape[0]
 #     return matches, total
 
-def calculate_accuracy_classification(outputs, targets, default_disambiguations):
+def calculate_accuracy_classification(outputs, targets, default_disambiguations, lemmas=None, synsets=None,
+                                      lemma2synsets=None, synset2id=None, single_softmax=False):
     matches, total = 0, 0
-    choices = numpy.argmax(outputs, axis=1)
-    # This loop makes sure that we take the 1st sense heuristics for lemmas unseen in training
-    for i in default_disambiguations:
-        choices[i] = 0
+    if single_softmax is False:
+        choices = numpy.argmax(outputs, axis=1)
+        # This loop makes sure that we take the 1st sense heuristics for lemmas unseen in training
+        for i in default_disambiguations:
+            choices[i] = 0
+    else:
+        choices = outputs
     for i, choice in enumerate(choices):
-        if targets[i] == choice:
+        if single_softmax is True:
+            if targets[i] == 0:
+                if lemma2synsets[lemmas[i]][0] in synsets[i].split(","):
+                    matches += 1
+            else:
+                permitted_synsets = lemma2synsets[lemmas[i]]
+                max, max_synset = -100, ""
+                for synset in permitted_synsets:
+                    if synset in synset2id:
+                        synset_activation = choice[synset2id[synset]]
+                        if synset_activation > max:
+                            max = synset_activation
+                            max_synset = synset
+                if max_synset in synsets[i].split(","):
+                    matches += 1
+        elif targets[i] == choice:
             matches += 1
         total += 1
     return matches, total

@@ -1,14 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="ChangeListManager">
-    <list default="true" id="327cf30d-f867-492f-a710-eb3dd8cd3b30" name="Default Changelist" comment="">
-      <change afterPath="$PROJECT_DIR$/.idea/DLinNLP.iml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/inspectionProfiles/profiles_settings.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/misc.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/modules.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/vcs.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/neural_wsd.py" beforeDir="false" afterPath="$PROJECT_DIR$/neural_wsd.py" afterDir="false" />
+    <list default="true" id="05d69b94-9faf-4b61-9779-bbf335ae7b04" name="Default Changelist" comment="">
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
     </list>
     <option name="EXCLUDED_CONVERTED_TO_IGNORED" value="true" />
     <option name="SHOW_DIALOG" value="false" />
@@ -17,20 +11,14 @@
     <option name="LAST_RESOLUTION" value="IGNORE" />
   </component>
   <component name="Git.Settings">
-    <option name="RECENT_BRANCH_BY_REPOSITORY">
-      <map>
-        <entry key="$PROJECT_DIR$" value="master" />
-      </map>
-    </option>
+    <option name="RECENT_COMMON_BRANCH" value="master" />
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
     <option name="ROOT_SYNC" value="SYNC" />
   </component>
-  <component name="ProjectId" id="1PVlDjaezMJT2UuOAFTZyGU6N4q" />
+  <component name="ProjectId" id="1S0pjLu7379ttRdr6AdnMFpivD3" />
   <component name="ProjectLevelVcsManager" settingsEditedManually="true" />
   <component name="PropertiesComponent">
-    <property name="SHARE_PROJECT_CONFIGURATION_FILES" value="true" />
-    <property name="last_opened_file_path" value="$PROJECT_DIR$/neural_wsd.py" />
-    <property name="settings.editor.selected.configurable" value="com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable" />
+    <property name="last_opened_file_path" value="$PROJECT_DIR$" />
   </component>
   <component name="RunDashboard">
     <option name="ruleStates">
@@ -44,55 +32,17 @@
       </list>
     </option>
   </component>
-  <component name="RunManager">
-    <configuration name="neural_wsd_torch" type="PythonConfigurationType" factoryName="Python">
-      <module name="DLinNLP" />
-      <option name="INTERPRETER_OPTIONS" value="" />
-      <option name="PARENT_ENVS" value="true" />
-      <envs>
-        <env name="PYTHONUNBUFFERED" value="1" />
-      </envs>
-      <option name="SDK_HOME" value="/usr/bin/python3.7" />
-      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
-      <option name="IS_MODULE_SDK" value="false" />
-      <option name="ADD_CONTENT_ROOTS" value="true" />
-      <option name="ADD_SOURCE_ROOTS" value="true" />
-      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/neural_wsd.py" />
-      <option name="PARAMETERS" value="-alpha 0.85 -batch_size 128 -dev_data_path $PROJECT_DIR$/../../neural-wsd/data/Unified-WSD-framework/tsv/semeval2007.tsv -dropout 0.5 -embeddings_path $PROJECT_DIR$/../../word-embeddings/lemma_sense_embeddings/WN30WN30glConOne-C15I7S7N5_200M_syn_and_lemma_WikipediaLemmatized_FILTERED.txt -embeddings_input lemma -lexicon_path $USER_HOME$/tools/ukb_wsd/lkb_sources/wn30.lex -mode training -n_hidden_neurons 400 -pos_filter True -save_path $PROJECT_DIR$/../experiments/test -sensekey2synset_path $PROJECT_DIR$/../../neural-wsd/data/sensekey2synset.pkl -max_seq_length 100 -test_data_path $PROJECT_DIR$/../../neural-wsd/data/Unified-WSD-framework/tsv/ALL.tsv -train_data_path $PROJECT_DIR$/../../neural-wsd/data/Unified-WSD-framework/tsv/semcor.tsv -wsd_method context_embedding" />
-      <option name="SHOW_COMMAND_LINE" value="false" />
-      <option name="EMULATE_TERMINAL" value="false" />
-      <option name="MODULE_MODE" value="false" />
-      <option name="REDIRECT_INPUT" value="false" />
-      <option name="INPUT_FILE" value="" />
-      <method v="2" />
-    </configuration>
-  </component>
   <component name="SvnConfiguration">
     <configuration />
   </component>
   <component name="TaskManager">
     <task active="true" id="Default" summary="Default task">
-      <changelist id="327cf30d-f867-492f-a710-eb3dd8cd3b30" name="Default Changelist" comment="" />
-      <created>1568187983873</created>
+      <changelist id="05d69b94-9faf-4b61-9779-bbf335ae7b04" name="Default Changelist" comment="" />
+      <created>1570710502413</created>
       <option name="number" value="Default" />
       <option name="presentableId" value="Default" />
-      <updated>1568187983873</updated>
+      <updated>1570710502413</updated>
     </task>
-    <task id="LOCAL-00001" summary="updated the project with the code for DLinNLP session">
-      <created>1568189014710</created>
-      <option name="number" value="00001" />
-      <option name="presentableId" value="LOCAL-00001" />
-      <option name="project" value="LOCAL" />
-      <updated>1568189014710</updated>
-    </task>
-    <task id="LOCAL-00002" summary="-">
-      <created>1568384613184</created>
-      <option name="number" value="00002" />
-      <option name="presentableId" value="LOCAL-00002" />
-      <option name="project" value="LOCAL" />
-      <updated>1568384613184</updated>
-    </task>
-    <option name="localTasksCounter" value="3" />
     <servers />
   </component>
   <component name="Vcs.Log.Tabs.Properties">
@@ -100,33 +50,10 @@
       <map>
         <entry key="MAIN">
           <value>
-            <State>
-              <option name="COLUMN_ORDER" />
-            </State>
+            <State />
           </value>
         </entry>
       </map>
     </option>
-  </component>
-  <component name="VcsManagerConfiguration">
-    <MESSAGE value="updated the project with the code for DLinNLP session" />
-    <MESSAGE value="-" />
-    <option name="LAST_COMMIT_MESSAGE" value="-" />
-  </component>
-  <component name="XDebuggerManager">
-    <breakpoint-manager>
-      <breakpoints>
-        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
-          <url>file://$PROJECT_DIR$/neural_wsd.py</url>
-          <line>140</line>
-          <option name="timeStamp" value="26" />
-        </line-breakpoint>
-        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
-          <url>file://$PROJECT_DIR$/neural_wsd.py</url>
-          <line>170</line>
-          <option name="timeStamp" value="28" />
-        </line-breakpoint>
-      </breakpoints>
-    </breakpoint-manager>
   </component>
 </project>
