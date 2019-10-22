@@ -103,7 +103,7 @@ def calculate_accuracy_embedding(outputs, lemmas, gold_synsets, lemma2synsets, e
 #     total = comparison_tensor.shape[0]
 #     return matches, total
 
-def calculate_accuracy_classification(outputs, targets, default_disambiguations, lemmas=None, synsets=None,
+def calculate_accuracy_classification(outputs, targets, default_disambiguations, lemmas=None, known_lemmas=None, synsets=None,
                                       lemma2synsets=None, synset2id=None, single_softmax=False):
     matches, total = 0, 0
     if single_softmax is False:
@@ -129,7 +129,7 @@ def calculate_accuracy_classification(outputs, targets, default_disambiguations,
                             max_synset = synset
                 if max_synset in synsets[i].split(","):
                     matches += 1
-        elif targets[i] == choice:
-            matches += 1
+        elif lemma2synsets[lemmas[i]][choice] in synsets[i].split(","):
+                matches += 1
         total += 1
     return matches, total
