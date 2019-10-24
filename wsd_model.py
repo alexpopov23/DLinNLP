@@ -12,7 +12,7 @@ POS_MAP = {"NOUN": "n", "VERB": "v", "ADJ": "a", "ADV": "r"}
 class WSDModel(nn.Module):
 
     def __init__(self, embeddings_dim, embedding_weights, hidden_dim, hidden_layers, dropout,
-                 output_layers=["embed_wsd"], lemma2synsets=None, synsets2id={}):
+                 output_layers=["embed_wsd"], lemma2synsets=None, synsets2id={}, pos_tags={}):
         super(WSDModel, self).__init__()
         self.output_layers = output_layers
         self.hidden_layers = hidden_layers
@@ -37,6 +37,8 @@ class WSDModel(nn.Module):
                 for lemma, synsets in lemma2synsets.items():
                     lemma2layers[lemma] = nn.Linear(2*hidden_dim, len(synsets))
                 self.classifiers = nn.Sequential(lemma2layers)
+        if "pos_tagger" in self.output_layers:
+            self.pos_tags = nn.Linear(2 * hidden_dim, len(pos_tags))
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, X, X_lengths, mask, lemmas, pos):
@@ -71,6 +73,8 @@ class WSDModel(nn.Module):
                         outputs_classif.append(output_classif)
                     outputs_classif = pad_sequence(outputs_classif, batch_first=True, padding_value=-100)
                     outputs["classify_wsd"] = outputs_classif
+            elif layer == "pos_tagger":
+                outputs["pos_tagger"] = self.dropout(self.pos_tags(X))
         return outputs
 
 
@@ -133,3 +137,6 @@ def calculate_accuracy_classification(outputs, targets, default_disambiguations,
                 matches += 1
         total += 1
     return matches, total
+
+def calculcate_accuracy_pos():
+    return

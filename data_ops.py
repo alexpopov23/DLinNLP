@@ -34,7 +34,7 @@ class Sample():
 class WSDataset(Dataset):
 
     def __init__(self, tsv_data, src2id, embeddings, embeddings_dim, max_labels, lemma2synsets, single_softmax,
-                 known_synsets=None):
+                 pos_tagger, known_synsets=None):
         # Our data has some pretty long sentences, so we will set a large max length
         # Alternatively, can throw them out or truncate them
         self.src2id = src2id
@@ -42,9 +42,9 @@ class WSDataset(Dataset):
         self.embeddings_dim = embeddings_dim
         self.max_labels = max_labels
         self.lemma2synsets = lemma2synsets
-        self.known_lemmas = set()
+        self.known_lemmas, self.known_pos = set(), set()
         self.data = self.parse_tsv(tsv_data, 300)
-        self.known_lemmas = sorted(self.known_lemmas)
+        self.known_lemmas, self.known_pos = sorted(self.known_lemmas), sorted(self.known_pos)
         self.single_softmax = single_softmax
         if self.single_softmax is True:
             if known_synsets is None:
@@ -58,6 +58,8 @@ class WSDataset(Dataset):
                                 id += 1
             else:
                 self.known_synsets = known_synsets
+        if pos_tagger is True:
+            self.known_pos = {i: pos_tag for i, pos_tag in enumerate(self.known_pos)}
 
     def __len__(self):
         return len(self.data)
@@ -152,12 +154,13 @@ class WSDataset(Dataset):
                     lemma = lemma.replace("'", "APOSTROPHE_")
                     lemma = lemma.replace(".", "DOT_")
                     pos = token["pos"]
-                    pos = POS_MAP[pos] if pos in POS_MAP else pos
-                    lemma_pos = lemma + "-" + pos
+                    # pos = POS_MAP[pos] if pos in POS_MAP else pos
+                    lemma_pos = lemma + "-" + POS_MAP[pos] if pos in POS_MAP else pos
                     sample.lemmas.append(lemma)
                     sample.pos.append(pos)
                     sample.lemmas_pos.append(lemma_pos)
                     self.known_lemmas.add(lemma_pos)
+                    self.known_lemmas.add(pos)
                     sample.synsets.append(token["synsets"])
                 sample.length = len(sample.forms)
                 # Take care to pad all sequences to the same length
