@@ -124,16 +124,16 @@ if __name__ == "__main__":
 
     # Get the training/dev/testing data
     save_path = args.save_path
-    f_train = args.train_data_path
-    f_dev = args.dev_data_path
-    f_test = args.test_data_path
-    trainset = WSDataset(f_train, src2id, embeddings, embedding_dim, max_labels, lemma2synsets, single_softmax)
+    train_path = args.train_data_path
+    dev_path = args.dev_data_path
+    test_path = args.test_data_path
+    trainset = WSDataset(train_path, src2id, embeddings, embedding_dim, max_labels, lemma2synsets, single_softmax)
     if single_softmax is True:
         synset2id = trainset.known_synsets
     else:
         synset2id = {}
-    devset = WSDataset(f_dev, src2id, embeddings, embedding_dim, max_labels, lemma2synsets, single_softmax, synset2id)
-    testset = WSDataset(f_test, src2id, embeddings, embedding_dim, max_labels, lemma2synsets, single_softmax, synset2id)
+    devset = WSDataset(dev_path, src2id, embeddings, embedding_dim, max_labels, lemma2synsets, single_softmax, synset2id)
+    testset = WSDataset(test_path, src2id, embeddings, embedding_dim, max_labels, lemma2synsets, single_softmax, synset2id)
 
     # Redirect print statements to both terminal and logfile
     sys.stdout = Logger(os.path.join(save_path, "results.txt"))

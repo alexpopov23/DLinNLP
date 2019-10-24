@@ -33,7 +33,7 @@ class Sample():
 
 class WSDataset(Dataset):
 
-    def __init__(self, tsv_file, src2id, embeddings, embeddings_dim, max_labels, lemma2synsets, single_softmax,
+    def __init__(self, tsv_data, src2id, embeddings, embeddings_dim, max_labels, lemma2synsets, single_softmax,
                  known_synsets=None):
         # Our data has some pretty long sentences, so we will set a large max length
         # Alternatively, can throw them out or truncate them
@@ -43,7 +43,7 @@ class WSDataset(Dataset):
         self.max_labels = max_labels
         self.lemma2synsets = lemma2synsets
         self.known_lemmas = set()
-        self.data = self.parse_tsv(open(tsv_file, "r").read(), 300)
+        self.data = self.parse_tsv(tsv_data, 300)
         self.known_lemmas = sorted(self.known_lemmas)
         self.single_softmax = single_softmax
         if self.single_softmax is True:
@@ -136,32 +136,37 @@ class WSDataset(Dataset):
                 "mask": torch.tensor(mask, dtype=torch.bool)}
         return data
 
-    def parse_tsv(self, f_dataset, max_length):
-        sentences = parse(f_dataset, CUSTOM_FIELDS)
+    def parse_tsv(self, dataset_path, max_length):
+        if os.path.isfile(dataset_path):
+            files = [dataset_path]
+        elif os.path.isdir(dataset_path):
+            files = [os.path.join(dataset_path, f_name) for f_name in os.listdir(dataset_path)]
         data = []
-        for sentence in sentences:
-            sample = Sample()
-            for token in sentence:
-                sample.forms.append(token["form"])
-                lemma = token["lemma"]
-                lemma = lemma.replace("'", "APOSTROPHE_")
-                lemma = lemma.replace(".", "DOT_")
-                pos = token["pos"]
-                pos = POS_MAP[pos] if pos in POS_MAP else pos
-                lemma_pos = lemma + "-" + pos
-                sample.lemmas.append(lemma)
-                sample.pos.append(pos)
-                sample.lemmas_pos.append(lemma_pos)
-                self.known_lemmas.add(lemma_pos)
-                sample.synsets.append(token["synsets"])
-            sample.length = len(sample.forms)
-            # Take care to pad all sequences to the same length
-            sample.forms += (max_length - len(sample.forms)) * ["<PAD>"]
-            sample.lemmas += (max_length - len(sample.lemmas)) * ["<PAD>"]
-            sample.pos += (max_length - len(sample.pos)) * "_"
-            sample.lemmas_pos += (max_length - len(sample.lemmas_pos)) * ["<PAD>"]
-            sample.synsets += (max_length - len(sample.synsets)) * "_"
-            data.append(sample)
+        for f in files:
+            sentences = parse(open(f, "r").read(), CUSTOM_FIELDS)
+            for sentence in sentences:
+                sample = Sample()
+                for token in sentence:
+                    sample.forms.append(token["form"])
+                    lemma = token["lemma"]
+                    lemma = lemma.replace("'", "APOSTROPHE_")
+                    lemma = lemma.replace(".", "DOT_")
+                    pos = token["pos"]
+                    pos = POS_MAP[pos] if pos in POS_MAP else pos
+                    lemma_pos = lemma + "-" + pos
+                    sample.lemmas.append(lemma)
+                    sample.pos.append(pos)
+                    sample.lemmas_pos.append(lemma_pos)
+                    self.known_lemmas.add(lemma_pos)
+                    sample.synsets.append(token["synsets"])
+                sample.length = len(sample.forms)
+                # Take care to pad all sequences to the same length
+                sample.forms += (max_length - len(sample.forms)) * ["<PAD>"]
+                sample.lemmas += (max_length - len(sample.lemmas)) * ["<PAD>"]
+                sample.pos += (max_length - len(sample.pos)) * "_"
+                sample.lemmas_pos += (max_length - len(sample.lemmas_pos)) * ["<PAD>"]
+                sample.synsets += (max_length - len(sample.synsets)) * "_"
+                data.append(sample)
         return data
 
 def transform_uef2tsv(path_to_dataset, output_path):
@@ -203,30 +208,66 @@ def transform_uef2tsv(path_to_dataset, output_path):
 def transform_original2tsv(path_to_dataset, output_path):
     for f_name in os.listdir(path_to_dataset):
         print(f_name)
-        with open(os.path.join(path_to_dataset, f_name), "r") as f:
-        # context = ET.parse(os.path.join(path_to_dataset, f_name)).getroot().get("context")
-        #     it = itertools.chain('<root>', f, '</root>')
-            f_contents = f.read()
-            root = ET.fromstring('<root>\n' + f_contents + '\n</root>')
-            paragraphs = root.get("contextfile").get("context")
-            for p in paragraphs:
-                sentences = p.findall("s")
-                for sent in sentences:
-                    wfs = sent.findall("wf") + sent.findall("punc")
-                    for wf in wfs:
-                        wordform = wf.text
-                        lemma = wf.get("lemma")
-                        if lemma is None:
-                            lemma = wordform
-                        pos = wf.get("pos")
-                        if pos is None:
-                            pos = "."
-                        synset = wf.get("lexsn")
-                        if len(synset) > 9:
-                            print(synset)
+        # with open(os.path.join(path_to_dataset, f_name), "r") as f:
+        # # context = ET.parse(os.path.join(path_to_dataset, f_name)).getroot().get("context")
+        # #     it = itertools.chain('<root>', f, '</root>')
+        # #     f_contents = f.read()
+        #     # root = ET.fromstring('<root>\n' + f_contents + '\n</root>')
+        #     doc = ET.parse(f)
+        paragraphs = ET.parse(os.path.join(path_to_dataset, f_name)).getroot().findall("contextfile")[0].findall("context")[0].findall("p")
+        sentence_str = []
+        for p in paragraphs:
+            sentences = p.findall("s")
+            for sent in sentences:
+                this_sent = ""
+                wfs = sent.findall("wf") + sent.findall("punc")
+                for wf in wfs:
+                    wordform = wf.text
+                    lemma = wf.get("lemma")
+                    if lemma is None:
+                        lemma = wordform
+                    pos = wf.get("pos")
+                    if pos is None:
+                        pos = "."
+                    synsets = wf.get("lexsn")
+                    if synsets is not None:
+                        synsets = synsets.split(";")
+                        # if lemma == "rotting":
+                        #     continue
+                        # for synset in synsets:
+                        #     sense = lemma + "%" + synset
+                        #     if sense not in sensekey2synset:
+                        #         continue
+                        synsets = [sensekey2synset[lemma + "%" + synset] for synset in synsets
+                                   if lemma + "%" + synset in sensekey2synset]
+                    else:
+                        synsets = ["_"]
+                    this_sent += "\t".join([wordform, lemma, pos, ",".join(synsets)]) + "\n"
+                sentence_str.append(this_sent)
+        dataset_str = "\n".join(sentence_str)
+        with open(os.path.join(output_path, f_name + ".tsv"), "w") as f:
+            f.write(dataset_str)
     return
 
-
+def fix_semcor_xml(path_to_dataset, output_path):
+    for f_name in os.listdir(path_to_dataset):
+        new_content = "<root>\n"
+        with open(os.path.join(path_to_dataset, f_name), "r") as f:
+            for line in f.readlines():
+                new_line = line
+                new_line = new_line.replace(">&<", ">&#038;<")
+                opening_tag = line.split(">")[0][1:]
+                fields = opening_tag.split(" ")
+                for field in fields:
+                    if "=" in field and "\"-\"" not in field:
+                        value = field.split("=")[1]
+                        new_field = field.split("=")[0] + "=" + "\"" + value + "\""
+                        new_line = new_line.replace(field, new_field)
+                new_content += new_line
+            new_content += "</root>"
+        with open(os.path.join(output_path, f_name + ".xml"), "w") as new_f:
+            new_f.write(new_content)
+    return
 
 def load_embeddings(embeddings_path):
     """Loads an embedding model with gensim
@@ -302,5 +343,7 @@ if __name__ == "__main__":
     #                   "/home/lenovo/dev/neural-wsd/data/Unified-WSD-framework/tsv")
     # f_dataset = "/home/lenovo/dev/neural-wsd/data/Unified-WSD-framework/tsv/semeval2007.tsv"
     # sentences = parse_tsv(open(f_dataset, "r").read(), 50)
-    transform_original2tsv("/home/lenovo/dev/neural-wsd/data/semcor3.0/all", "NONE")
+    transform_original2tsv("/home/lenovo/dev/neural-wsd/data/semcor3.0/all_fixed1",
+                           "/home/lenovo/dev/neural-wsd/data/semcor3.0/all_tsv")
+    # fix_semcor_xml("/home/lenovo/dev/neural-wsd/data/semcor3.0/all", "/home/lenovo/dev/neural-wsd/data/semcor3.0/all_fixed1")
     print("This is the end.")
