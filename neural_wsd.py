@@ -6,7 +6,7 @@ import sys
 
 from auxiliary import Logger
 from data_ops import WSDataset, load_embeddings, get_wordnet_lexicon
-from wsd_model import WSDModel, calculate_accuracy_embedding, calculate_accuracy_classification
+from wsd_model import WSDModel, calculate_accuracy_embedding, calculate_accuracy_classification, calculate_accuracy_pos
 
 def disambiguate_by_default(lemmas, known_lemmas):
     default_disambiguations = []
@@ -24,7 +24,8 @@ def eval_loop(data_loader, known_lemmas, model, output_layers):
         synsets = numpy.asarray(eval_data['synsets']).transpose()[eval_data["mask"]]
         pos = numpy.asarray(eval_data['pos']).transpose()[eval_data["mask"]]
         targets_classify = torch.from_numpy(numpy.asarray(eval_data["targets_classify"])[eval_data["mask"]])
-        outputs = model(eval_data["inputs"], eval_data["length"], eval_data["mask"], lemmas, pos)
+        targets_pos = torch.from_numpy(numpy.asarray(eval_data["targets_pos"])[eval_data["pos_mask"]])
+        outputs = model(eval_data["inputs"], eval_data["length"], eval_data["mask"], eval_data["pos_mask"], lemmas)
         accuracy_embed, accuracy_classify = 0.0, 0.0
         if "embed_wsd" in output_layers:
             matches_embed, total_embed = calculate_accuracy_embedding(outputs["embed_wsd"],
@@ -51,7 +52,12 @@ def eval_loop(data_loader, known_lemmas, model, output_layers):
             matches_classify_all += matches_classify
             total_classify_all += total_classify
             accuracy_classify = matches_classify_all * 1.0 / total_classify_all
-    return accuracy_embed, accuracy_classify
+        if "pos_tagger" in output_layers:
+            matches_pos, total_pos = calculate_accuracy_pos(
+                outputs["pos_tagger"],
+                targets_pos)
+            accuracy_pos = matches_pos * 1.0 / total_pos
+    return accuracy_embed, accuracy_classify, accuracy_pos
 
 if __name__ == "__main__":
 
@@ -154,9 +160,10 @@ if __name__ == "__main__":
 
     # Construct the model
     model = WSDModel(embedding_dim, embeddings, hiden_neurons, hiden_layers, dropout, output_layers, lemma2synsets,
-                     synset2id)
+                     synset2id, trainset.known_pos)
     loss_func_embed = torch.nn.MSELoss()
     loss_func_classify = torch.nn.CrossEntropyLoss(ignore_index=-100)
+    loss_func_pos = torch.nn.CrossEntropyLoss()
     # loss_func_classify = torch.nn.BCEWithLogitsLoss()
     optimizer = torch.optim.Adam(model.parameters())
     # optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate)
@@ -172,20 +179,19 @@ if __name__ == "__main__":
     # Train loop
     else:
         least_loss = 0.0
-        best_accuracy_embed, best_accuracy_classify = 0.0, 0.0
+        best_accuracy_embed, best_accuracy_classify, best_accuracy_pos = 0.0, 0.0, 0.0
         eval_at = 100
         for epoch in range(100):
             print("***** Start of epoch " + str(epoch) + " *****")
-            average_loss_embed, average_loss_classify, average_loss_overall = 0.0, 0.0, 0.0
+            average_loss_embed, average_loss_classify, average_loss_pos, average_loss_overall = 0.0, 0.0, 0.0, 0.0
             for step, data in enumerate(trainloader):
                 model.train()
                 optimizer.zero_grad()
                 lemmas = numpy.asarray(data['lemmas_pos']).transpose()[data["mask"]]
                 default_disambiguations = disambiguate_by_default(lemmas, trainset.known_lemmas)
-                pos = numpy.asarray(data['pos']).transpose()[data["mask"]]
                 synsets = numpy.asarray(data['synsets']).transpose()[data["mask"]]
                 lengths_labels = numpy.asarray(data["lengths_labels"])[data["mask"]]
-                outputs = model(data["inputs"], data["length"], data["mask"], lemmas, pos)
+                outputs = model(data["inputs"], data["length"], data["mask"], data["pos_mask"], lemmas)
                 mask = torch.reshape(data["mask"], (data["mask"].shape[0], data["mask"].shape[1], 1))
                 loss = 0.0
                 # Calculate loss for the context embedding method
@@ -205,6 +211,11 @@ if __name__ == "__main__":
                     loss_classify = loss_func_classify(outputs["classify_wsd"], targets_classify)
                     loss += loss_classify
                     average_loss_classify += loss_classify
+                if "pos_tagger" in output_layers:
+                    targets_pos = torch.from_numpy(numpy.asarray(data["targets_pos"])[data["pos_mask"]])
+                    loss_pos = loss_func_pos(outputs["pos_tagger"], targets_pos)
+                    loss += loss_pos
+                    average_loss_pos += loss_pos
                 # loss = loss_embed + loss_classify
                 loss.backward()
                 optimizer.step()
@@ -242,13 +253,25 @@ if __name__ == "__main__":
                         average_loss_classify /= (eval_at if step != 0 else 1)
                         print("Average classification loss (training): " + str(average_loss_classify.detach().numpy()))
                         average_loss_overall += average_loss_classify.detach().numpy()
+                    if "pos_tagger" in output_layers:
+                        matches_pos, total_pos = calculate_accuracy_pos(
+                            outputs["pos_tagger"],
+                            targets_pos)
+                        train_accuracy_pos = matches_pos * 1.0 / total_pos
+
+                        print("Training pos tagger accuracy: " + str(train_accuracy_pos))
+                        average_loss_pos /= (eval_at if step != 0 else 1)
+                        print("Average pos tagger loss (training): " + str(average_loss_pos.detach().numpy()))
+                        average_loss_overall += average_loss_pos.detach().numpy()
                     print("Average overall loss (training): " + str(average_loss_overall))
-                    average_loss_embed, average_loss_classif, average_loss_overall = 0.0, 0.0, 0.0
+                    average_loss_embed, average_loss_classif, average_loss_poss, average_loss_overall = 0.0, 0.0, 0.0, 0.0
 
                     # Loop over the dev dataset
-                    dev_accuracy_embed, dev_accuracy_classify = eval_loop(devloader, trainset.known_lemmas, model, output_layers)
+                    dev_accuracy_embed, dev_accuracy_classify, dev_accuracy_pos = \
+                        eval_loop(devloader, trainset.known_lemmas, model, output_layers)
                     print("Dev embedding accuracy: " + str(dev_accuracy_embed))
                     print("Dev classification accuracy: " + str(dev_accuracy_classify))
+                    print("Dev pos tagging accuracy: " + str(dev_accuracy_pos))
                     best_result = False
                     if dev_accuracy_embed > best_accuracy_embed:
                         for file in os.listdir(save_path):
@@ -267,10 +290,20 @@ if __name__ == "__main__":
                                                                     + "-classify_wsd=" + str(dev_accuracy_classify)[:7] + ".pt"))
                         best_accuracy_classify = dev_accuracy_classify
                         best_result = True
+                    if dev_accuracy_pos > best_accuracy_pos:
+                        for file in os.listdir(save_path):
+                            if "pos_tagger" in file:
+                                os.remove(os.path.join(save_path, file))
+                        torch.save(model.state_dict(), os.path.join(save_path, "epoch" + str(epoch) + "-step" + str(step)
+                                                                    + "-pos_tagger=" + str(dev_accuracy_pos)[:7] + ".pt"))
+                        best_accuracy_pos = dev_accuracy_pos
+                        best_result = True
                     if best_result is True:
                         # Eval on the test dataset as well
-                        test_accuracy_embed, test_accuracy_classify = eval_loop(testloader, trainset.known_lemmas, model, output_layers)
+                        test_accuracy_embed, test_accuracy_classify, test_pos_accuracy = \
+                            eval_loop(testloader, trainset.known_lemmas, model, output_layers)
                         print("Test embedding accuracy: " + str(test_accuracy_embed))
                         print("Test classification accuracy: " + str(test_accuracy_classify))
+                        print("Test pos tagging accuracy: " + str(test_pos_accuracy))
 
     print("This is the end.")

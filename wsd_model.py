@@ -41,7 +41,7 @@ class WSDModel(nn.Module):
             self.pos_tags = nn.Linear(2 * hidden_dim, len(pos_tags))
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, X, X_lengths, mask, lemmas, pos):
+    def forward(self, X, X_lengths, mask, pos_mask, lemmas):
         X = self.word_embeddings(X) # shape is [batch_size,max_length,embeddings_dim]
         X = torch.nn.utils.rnn.pack_padded_sequence(X,
                                                     X_lengths,
@@ -52,29 +52,34 @@ class WSDModel(nn.Module):
         X, _ = torch.nn.utils.rnn.pad_packed_sequence(X, batch_first=True) # shape is [batch_size, max_length_of_X, 2* hidden_layer]
         # Therefore, make sure mask has the same shape as X
         mask = mask[:, :X.shape[1]] # shape is [batch_size, max_length_of_X]
+        pos_mask = pos_mask[:, :X.shape[1]] # shape is [batch_size, max_length_of_X]
         # Make mask broadcastable to X
         mask = torch.reshape(mask, (mask.shape[0], mask.shape[1], 1))
+        pos_mask = torch.reshape(pos_mask, (pos_mask.shape[0], pos_mask.shape[1], 1))
         # Select only RNN outputs that correspond to synset-tagged words in the data
-        X = torch.masked_select(X, mask)
+        X_wsd = torch.masked_select(X, mask)
         # masked_select flattens the tensor, but we need it as matrix
-        X = X.view(-1, 2 * self.hidden_dim) # shape is [num_labels, 2*hidden_dim]
+        X_wsd = X_wsd.view(-1, 2 * self.hidden_dim) # shape is [num_labels, 2*hidden_dim]
+        # Select also the words to be POS tagged
+        X_pos = torch.masked_select(X, pos_mask)
+        X_pos = X_pos.view(-1, 2 * self.hidden_dim)
         outputs = {}
         for layer in self.output_layers:
             if layer == "embed_wsd":
-                outputs["embed_wsd"] = self.dropout(self.output_emb(X))
+                outputs["embed_wsd"] = self.dropout(self.output_emb(X_wsd))
             elif layer == "classify_wsd":
                 if len(self.synsets2id) > 0:
-                    outputs["classify_wsd"] = self.dropout(self.output_classify(X))
+                    outputs["classify_wsd"] = self.dropout(self.output_classify(X_wsd))
                 else:
                     outputs_classif = []
-                    for i, x in enumerate(torch.unbind(X)):
+                    for i, x in enumerate(torch.unbind(X_wsd)):
                         # lemma_pos = lemmas[i] + "-" + POS_MAP[pos[i]]
                         output_classif = self.dropout(self.classifiers._modules[lemmas[i]](x))
                         outputs_classif.append(output_classif)
                     outputs_classif = pad_sequence(outputs_classif, batch_first=True, padding_value=-100)
                     outputs["classify_wsd"] = outputs_classif
             elif layer == "pos_tagger":
-                outputs["pos_tagger"] = self.dropout(self.pos_tags(X))
+                outputs["pos_tagger"] = self.dropout(self.pos_tags(X_pos))
         return outputs
 
 
@@ -138,5 +143,9 @@ def calculate_accuracy_classification(outputs, targets, default_disambiguations,
         total += 1
     return matches, total
 
-def calculcate_accuracy_pos():
-    return
+def calculate_accuracy_pos(outputs, targets):
+    choices = torch.argmax(outputs, dim=1)
+    comparison_tensor = torch.eq(choices, targets)
+    matches = torch.sum(comparison_tensor).numpy()
+    total = comparison_tensor.shape[0]
+    return matches, total

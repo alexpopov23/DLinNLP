@@ -34,7 +34,7 @@ class Sample():
 class WSDataset(Dataset):
 
     def __init__(self, tsv_data, src2id, embeddings, embeddings_dim, max_labels, lemma2synsets, single_softmax,
-                 pos_tagger, known_synsets=None):
+                 known_synsets=None):
         # Our data has some pretty long sentences, so we will set a large max length
         # Alternatively, can throw them out or truncate them
         self.src2id = src2id
@@ -58,8 +58,7 @@ class WSDataset(Dataset):
                                 id += 1
             else:
                 self.known_synsets = known_synsets
-        if pos_tagger is True:
-            self.known_pos = {i: pos_tag for i, pos_tag in enumerate(self.known_pos)}
+        self.known_pos = {pos_tag:i for i, pos_tag in enumerate(self.known_pos)}
 
     def __len__(self):
         return len(self.data)
@@ -72,18 +71,27 @@ class WSDataset(Dataset):
         # Note that we are working with lemmas for the input, not the word forms
         inputs = [self.src2id[lemma] if lemma in self.src2id
                   else self.src2id["<UNK>"] for lemma in sample.lemmas]
-        targets_embed, neg_targets, targets_classify, mask, lengths_labels = [], [], [], [], []
+        targets_embed, neg_targets, targets_classify, targets_pos, mask, pos_mask, lengths_labels = \
+            [], [], [], [], [], [], []
         for i, label in enumerate(sample.synsets):
+            lemma_pos = sample.lemmas_pos[i]
+            pos = sample.pos[i]
             target_embed, neg_target, target_classify = \
                 torch.zeros(self.embeddings_dim), torch.zeros(self.embeddings_dim), torch.zeros(self.max_labels)
+            # Get labels for POS tags
+            targets_pos.append(self.known_pos[pos] if pos in self.known_pos else -1)
             if label == "_":
                 mask.append(False)
+                if sample.pos[i] is not "_":
+                    pos_mask.append(True)
+                else:
+                    pos_mask.append(False)
                 lengths_labels.append(0)
                 targets_classify.append(-1)
             else:
                 mask.append(True)
+                pos_mask.append(True)
                 # lemma_pos = sample.lemmas[i] + "-" + sample.pos[i] # e.g. "bear-n"
-                lemma_pos = sample.lemmas_pos[i]
                 all_synsets = self.lemma2synsets[lemma_pos]
                 # Take care of cases of multiple labels, e.g. "01104026-a,00357790-a"
                 these_synsets = label.split(",")
@@ -135,7 +143,9 @@ class WSDataset(Dataset):
                 "targets_embed": torch.stack(targets_embed).clone().detach(),
                 "neg_targets": torch.stack(neg_targets).clone().detach(),
                 "targets_classify": torch.tensor(targets_classify, dtype=torch.long),
-                "mask": torch.tensor(mask, dtype=torch.bool)}
+                "targets_pos": torch.tensor(targets_pos, dtype=torch.long),
+                "mask": torch.tensor(mask, dtype=torch.bool),
+                "pos_mask": torch.tensor(pos_mask, dtype=torch.bool)}
         return data
 
     def parse_tsv(self, dataset_path, max_length):
@@ -160,7 +170,7 @@ class WSDataset(Dataset):
                     sample.pos.append(pos)
                     sample.lemmas_pos.append(lemma_pos)
                     self.known_lemmas.add(lemma_pos)
-                    self.known_lemmas.add(pos)
+                    self.known_pos.add(pos)
                     sample.synsets.append(token["synsets"])
                 sample.length = len(sample.forms)
                 # Take care to pad all sequences to the same length
