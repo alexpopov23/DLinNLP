@@ -4,6 +4,8 @@ import torch
 import os
 import sys
 
+from torchcrf import CRF
+
 from auxiliary import Logger
 from data_ops import WSDataset, load_embeddings, get_wordnet_lexicon
 from wsd_model import WSDModel, calculate_accuracy_embedding, calculate_accuracy_classification, calculate_accuracy_pos
@@ -66,6 +68,8 @@ if __name__ == "__main__":
                         help='Coefficient to weight the positive and negative labels.')
     parser.add_argument('-batch_size', dest='batch_size', required=False, default=128,
                         help='Size of the training batches.')
+    parser.add_argument('-crf_layer', dest='crf_layer', required=False, default=False,
+                        help='Whether to use a CRF layer on top of the LSTM. Indicate True if yes.')
     parser.add_argument('-dev_data_path', dest='dev_data_path', required=False,
                         help='The path to the gold corpus used for development.')
     parser.add_argument('-dropout', dest='dropout', required=False, default="0.",
@@ -126,7 +130,11 @@ if __name__ == "__main__":
     embedding_dim = embeddings.shape[1]
     lexicon_path = args.lexicon_path
     lemma2synsets, max_labels = get_wordnet_lexicon(lexicon_path, args.pos_filter)
-    single_softmax = True if args.n_classifiers == "single" else False
+    crf_layer = True if args.crf_layer == "True" else False
+    if crf_layer is True:
+        single_softmax = True
+    else:
+        single_softmax = True if args.n_classifiers == "single" else False
 
     # Get the training/dev/testing data
     save_path = args.save_path
@@ -162,8 +170,12 @@ if __name__ == "__main__":
     model = WSDModel(embedding_dim, embeddings, hiden_neurons, hiden_layers, dropout, output_layers, lemma2synsets,
                      synset2id, trainset.known_pos)
     loss_func_embed = torch.nn.MSELoss()
-    loss_func_classify = torch.nn.CrossEntropyLoss(ignore_index=-100)
-    loss_func_pos = torch.nn.CrossEntropyLoss()
+    if crf_layer is True:
+        loss_func_classify = CRF(len(synset2id))
+        loss_func_pos = CRF(len(trainset.known_pos))
+    else:
+        loss_func_classify = torch.nn.CrossEntropyLoss(ignore_index=-100)
+        loss_func_pos = torch.nn.CrossEntropyLoss()
     # loss_func_classify = torch.nn.BCEWithLogitsLoss()
     optimizer = torch.optim.Adam(model.parameters())
     # optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate)
@@ -209,12 +221,12 @@ if __name__ == "__main__":
                 if "classify_wsd" in output_layers:
                     targets_classify = torch.from_numpy(numpy.asarray(data["targets_classify"])[data["mask"]])
                     loss_classify = loss_func_classify(outputs["classify_wsd"], targets_classify)
-                    loss += loss_classify
+                    loss += loss_classify * (-1.0 if crf_layer is True else 1.0)
                     average_loss_classify += loss_classify
                 if "pos_tagger" in output_layers:
                     targets_pos = torch.from_numpy(numpy.asarray(data["targets_pos"])[data["pos_mask"]])
                     loss_pos = loss_func_pos(outputs["pos_tagger"], targets_pos)
-                    loss += loss_pos
+                    loss += loss_pos * (-1.0 if crf_layer is True else 1.0)
                     average_loss_pos += loss_pos
                 # loss = loss_embed + loss_classify
                 loss.backward()

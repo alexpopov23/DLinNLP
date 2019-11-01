@@ -52,6 +52,34 @@ class WSDModel(nn.Module):
         X, _ = torch.nn.utils.rnn.pad_packed_sequence(X, batch_first=True) # shape is [batch_size, max_length_of_X, 2* hidden_layer]
         # Therefore, make sure mask has the same shape as X
         mask = mask[:, :X.shape[1]] # shape is [batch_size, max_length_of_X]
+        mask = torch.reshape(mask, (mask.shape[0], mask.shape[1], 1))
+        X_embed = torch.masked_select(X, mask)
+        X_embed = X_embed.view(-1, 2 * self.hidden_dim)  # shape is [num_labels, 2*hidden_dim]
+        outputs = {}
+        for layer in self.output_layers:
+            if layer == "embed_wsd":
+                outputs["embed_wsd"] = self.dropout(self.output_emb(X_embed))
+            if layer == "classify_wsd":
+                outputs["classify_wsd"] = pad_sequence(self.dropout(self.output_classify(X)),
+                                                       batch_first=True,
+                                                       padding_value=-100)
+            if layer == "pos_tagger":
+                outputs["pos_tagger"] = pad_sequence(self.dropout(self.pos_tags(X)),
+                                                     batch_first=True,
+                                                     padding_value=-100)
+        return outputs
+
+    def forward_old(self, X, X_lengths, mask, pos_mask, lemmas):
+        X = self.word_embeddings(X) # shape is [batch_size,max_length,embeddings_dim]
+        X = torch.nn.utils.rnn.pack_padded_sequence(X,
+                                                    X_lengths,
+                                                    batch_first=True,
+                                                    enforce_sorted=False)
+        X, _ = self.lstm(X)
+        # pad_packed_sequence cuts the sequences in the batch to the greatest sequence length
+        X, _ = torch.nn.utils.rnn.pad_packed_sequence(X, batch_first=True) # shape is [batch_size, max_length_of_X, 2* hidden_layer]
+        # Therefore, make sure mask has the same shape as X
+        mask = mask[:, :X.shape[1]] # shape is [batch_size, max_length_of_X]
         pos_mask = pos_mask[:, :X.shape[1]] # shape is [batch_size, max_length_of_X]
         # Make mask broadcastable to X
         mask = torch.reshape(mask, (mask.shape[0], mask.shape[1], 1))
