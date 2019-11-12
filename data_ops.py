@@ -72,7 +72,7 @@ class WSDataset(Dataset):
         inputs = [self.src2id[lemma] if lemma in self.src2id
                   else self.src2id["<UNK>"] for lemma in sample.lemmas]
         targets_embed, neg_targets, targets_classify, targets_pos, mask, pos_mask, lengths_labels = \
-            [], [], [], [], [], [], []
+            [], [], [], [], [], [], 0
         for i, label in enumerate(sample.synsets):
             lemma_pos = sample.lemmas_pos[i]
             pos = sample.pos[i]
@@ -86,7 +86,6 @@ class WSDataset(Dataset):
                     pos_mask.append(True)
                 else:
                     pos_mask.append(False)
-                lengths_labels.append(0)
                 targets_classify.append(-1)
             else:
                 mask.append(True)
@@ -111,7 +110,7 @@ class WSDataset(Dataset):
                         targets_classify.append(self.known_synsets["UNKNOWN"])
                 else:
                     targets_classify.append(self.lemma2synsets[lemma_pos].index(random.choice(these_synsets)))
-                lengths_labels.append(len(all_synsets))
+                lengths_labels += 1
                 # Pick negative targets too
                 # Copy the list of synsets, so that we don't change the dict
                 neg_options = copy.copy(all_synsets)
@@ -136,7 +135,8 @@ class WSDataset(Dataset):
         data = {"lemmas": sample.lemmas,
                 "lemmas_pos": sample.lemmas_pos,
                 "length": sample.length,
-                "lengths_labels": torch.tensor(lengths_labels, dtype=torch.long),
+                # "lengths_labels": torch.tensor(lengths_labels, dtype=torch.long),
+                "lengths_labels": lengths_labels,
                 "pos": sample.pos,
                 "synsets": sample.synsets,
                 "inputs": torch.tensor(inputs, dtype=torch.long),

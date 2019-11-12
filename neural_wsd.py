@@ -1,8 +1,9 @@
 import argparse
+import itertools
 import numpy
-import torch
 import os
 import sys
+import torch
 
 from torchcrf import CRF
 
@@ -16,6 +17,39 @@ def disambiguate_by_default(lemmas, known_lemmas):
         if lemma not in known_lemmas:
             default_disambiguations.append(i)
     return default_disambiguations
+
+def slice_and_pad(tensor, lengths, tag_length=1):
+    max_length = max(lengths)
+    iterable = iter(tensor)
+    padded_tensor = []
+    padding = tag_length * [-1]
+    for l in lengths:
+        if l == 0:
+            continue
+        padded_seq = list(itertools.islice(iterable, l*tag_length))
+        if tag_length > 1:
+            padded_seq = [padded_seq[i*tag_length:((i+1)*tag_length)] for i in range(l)]
+            padded_tensor.append(padded_seq + (max_length - l).item() * [padding])
+        else:
+            padded_tensor.append(padded_seq + (max_length - l).item() * padding)
+    return torch.tensor(padded_tensor)
+
+def length_to_mask(lengths, max_len=None, dtype=None):
+    """length: B.
+    return B x max_len.
+    If max_len is None, then max of length will be used.
+    from: https://discuss.pytorch.org/t/how-to-generate-variable-length-mask/23397/2
+    """
+    assert len(lengths.shape) == 1, 'Length shape should be 1 dimensional.'
+    # lengths = [l for l in lengths if l != 0]
+    lengths = lengths[lengths.nonzero().squeeze()]
+    max_len = max_len or lengths.max().item()
+    mask = torch.arange(max_len, device=lengths.device,
+                        dtype=lengths.dtype).expand(len(lengths), max_len) < lengths.unsqueeze(1)
+    if dtype is not None:
+        mask = torch.as_tensor(mask, dtype=dtype, device=lengths.device)
+    return mask
+
 
 def eval_loop(data_loader, known_lemmas, model, output_layers):
     matches_embed_all, total_embed_all = 0, 0
@@ -131,10 +165,10 @@ if __name__ == "__main__":
     lexicon_path = args.lexicon_path
     lemma2synsets, max_labels = get_wordnet_lexicon(lexicon_path, args.pos_filter)
     crf_layer = True if args.crf_layer == "True" else False
-    if crf_layer is True:
-        single_softmax = True
-    else:
-        single_softmax = True if args.n_classifiers == "single" else False
+    # if crf_layer is True:
+    #     single_softmax = True
+    # else:
+    single_softmax = True if args.n_classifiers == "single" else False
 
     # Get the training/dev/testing data
     save_path = args.save_path
@@ -171,8 +205,8 @@ if __name__ == "__main__":
                      synset2id, trainset.known_pos)
     loss_func_embed = torch.nn.MSELoss()
     if crf_layer is True:
-        loss_func_classify = CRF(len(synset2id))
-        loss_func_pos = CRF(len(trainset.known_pos))
+        loss_func_classify = CRF(len(synset2id), batch_first=True)
+        loss_func_pos = CRF(len(trainset.known_pos), batch_first=True)
     else:
         loss_func_classify = torch.nn.CrossEntropyLoss(ignore_index=-100)
         loss_func_pos = torch.nn.CrossEntropyLoss()
@@ -202,15 +236,15 @@ if __name__ == "__main__":
                 lemmas = numpy.asarray(data['lemmas_pos']).transpose()[data["mask"]]
                 default_disambiguations = disambiguate_by_default(lemmas, trainset.known_lemmas)
                 synsets = numpy.asarray(data['synsets']).transpose()[data["mask"]]
-                lengths_labels = numpy.asarray(data["lengths_labels"])[data["mask"]]
+                # lengths_labels = numpy.asarray(data["lengths_labels"])[data["mask"]]
                 outputs = model(data["inputs"], data["length"], data["mask"], data["pos_mask"], lemmas)
-                mask = torch.reshape(data["mask"], (data["mask"].shape[0], data["mask"].shape[1], 1))
                 loss = 0.0
                 # Calculate loss for the context embedding method
                 if "embed_wsd" in output_layers:
-                    targets_embed = torch.masked_select(data["targets_embed"], mask)
+                    mask_embed = torch.reshape(data["mask"], (data["mask"].shape[0], data["mask"].shape[1], 1))
+                    targets_embed = torch.masked_select(data["targets_embed"], mask_embed)
                     targets_embed = targets_embed.view(-1, embedding_dim)
-                    neg_targets = torch.masked_select(data["neg_targets"], mask)
+                    neg_targets = torch.masked_select(data["neg_targets"], mask_embed)
                     neg_targets = neg_targets.view(-1, embedding_dim)
                     # targets_classify = targets_classify.view(-1, max_labels)
                     loss_embed = alpha * loss_func_embed(outputs["embed_wsd"], targets_embed) + \
@@ -219,13 +253,27 @@ if __name__ == "__main__":
                     average_loss_embed += loss_embed
                 # Calculate loss for the classification method
                 if "classify_wsd" in output_layers:
-                    targets_classify = torch.from_numpy(numpy.asarray(data["targets_classify"])[data["mask"]])
-                    loss_classify = loss_func_classify(outputs["classify_wsd"], targets_classify)
+                    # targets_classify = torch.from_numpy(numpy.asarray(data["targets_classify"])[data["mask"]])
+                    # mask_classify = torch.reshape(data["mask"], (data["mask"].shape[0], data["mask"].shape[1], 1))
+                    mask_classify = data["mask"][:, :outputs["classify_wsd"].shape[1]]
+                    outputs_classify = torch.masked_select(outputs["classify_wsd"],
+                                                           torch.reshape(mask_classify, (mask_classify.shape[0],
+                                                                                         mask_classify.shape[1],
+                                                                                         1)))
+                    targets_classify = torch.masked_select(data["targets_classify"][:, :outputs["classify_wsd"].shape[1]],
+                                                           mask_classify)
+                    # loss_classify = loss_func_classify(outputs["classify_wsd"], targets_classify, mask_classify)
+                    outputs_classify = slice_and_pad(outputs_classify, data["lengths_labels"], tag_length=len(synset2id))
+                    targets_classify = slice_and_pad(targets_classify, data["lengths_labels"])
+                    mask_crf = length_to_mask(data["lengths_labels"], outputs_classify.shape[1])
+                    loss_classify = loss_func_classify(outputs_classify, targets_classify, mask_crf)
                     loss += loss_classify * (-1.0 if crf_layer is True else 1.0)
                     average_loss_classify += loss_classify
                 if "pos_tagger" in output_layers:
-                    targets_pos = torch.from_numpy(numpy.asarray(data["targets_pos"])[data["pos_mask"]])
-                    loss_pos = loss_func_pos(outputs["pos_tagger"], targets_pos)
+                    # targets_pos = torch.from_numpy(numpy.asarray(data["targets_pos"])[data["pos_mask"]])
+                    pos_mask = data["pos_mask"][:, :outputs["pos_tagger"].shape[1]]
+                    targets_pos = data["targets_pos"][:, :outputs["pos_tagger"].shape[1]]
+                    loss_pos = loss_func_pos(outputs["pos_tagger"], targets_pos, pos_mask, reduction="mean")
                     loss += loss_pos * (-1.0 if crf_layer is True else 1.0)
                     average_loss_pos += loss_pos
                 # loss = loss_embed + loss_classify
