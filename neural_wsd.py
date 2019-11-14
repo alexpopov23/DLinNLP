@@ -153,8 +153,6 @@ if __name__ == "__main__":
                         help='The path to the gold corpus used for training.')
     parser.add_argument('-training_epochs', dest='training_epochs', required=False, default=100001,
                         help='How many epochs over the data the network should train for.')
-    parser.add_argument('-wsd_method', dest='wsd_method', required=True,
-                        help='Which method for WSD? Options: classification, context_embedding, multitask')
 
     # Get the embeddings and lexicon
     args = parser.parse_args()
@@ -205,7 +203,7 @@ if __name__ == "__main__":
                      synset2id, trainset.known_pos)
     loss_func_embed = torch.nn.MSELoss()
     if crf_layer is True:
-        loss_func_classify = CRF(len(synset2id), batch_first=True)
+        loss_func_classify = CRF(model.num_wsd_classes, batch_first=True)
         loss_func_pos = CRF(len(trainset.known_pos), batch_first=True)
     else:
         loss_func_classify = torch.nn.CrossEntropyLoss(ignore_index=-100)
@@ -255,15 +253,16 @@ if __name__ == "__main__":
                 if "classify_wsd" in output_layers:
                     # targets_classify = torch.from_numpy(numpy.asarray(data["targets_classify"])[data["mask"]])
                     # mask_classify = torch.reshape(data["mask"], (data["mask"].shape[0], data["mask"].shape[1], 1))
-                    mask_classify = data["mask"][:, :outputs["classify_wsd"].shape[1]]
-                    outputs_classify = torch.masked_select(outputs["classify_wsd"],
-                                                           torch.reshape(mask_classify, (mask_classify.shape[0],
-                                                                                         mask_classify.shape[1],
-                                                                                         1)))
-                    targets_classify = torch.masked_select(data["targets_classify"][:, :outputs["classify_wsd"].shape[1]],
-                                                           mask_classify)
+                    # mask_classify = data["mask"][:, :outputs["classify_wsd"].shape[1]]
+                    # outputs_classify = torch.masked_select(outputs["classify_wsd"],
+                    #                                        torch.reshape(mask_classify, (mask_classify.shape[0],
+                    #                                                                      mask_classify.shape[1],
+                    #                                                                      1)))
+                    targets_classify = torch.masked_select(data["targets_classify"], data["mask"])
                     # loss_classify = loss_func_classify(outputs["classify_wsd"], targets_classify, mask_classify)
-                    outputs_classify = slice_and_pad(outputs_classify, data["lengths_labels"], tag_length=len(synset2id))
+                    outputs_classify = slice_and_pad(outputs["classify_wsd"],
+                                                     data["lengths_labels"],
+                                                     tag_length=model.num_wsd_classes)
                     targets_classify = slice_and_pad(targets_classify, data["lengths_labels"])
                     mask_crf = length_to_mask(data["lengths_labels"], outputs_classify.shape[1])
                     loss_classify = loss_func_classify(outputs_classify, targets_classify, mask_crf)

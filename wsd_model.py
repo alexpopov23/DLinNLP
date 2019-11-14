@@ -17,6 +17,7 @@ class WSDModel(nn.Module):
         self.output_layers = output_layers
         self.hidden_layers = hidden_layers
         self.hidden_dim = hidden_dim
+        self.num_wsd_classes = 0
         self.synsets2id = synsets2id
         self.word_embeddings = nn.Embedding.from_pretrained(embedding_weights,
                                                             freeze=True)
@@ -32,10 +33,13 @@ class WSDModel(nn.Module):
         if "classify_wsd" in self.output_layers:
             if len(self.synsets2id) > 0:
                 self.output_classify = nn.Linear(2*hidden_dim, len(self.synsets2id))
+                self.num_wsd_classes = len(self.synsets2id)
             else:
                 lemma2layers = collections.OrderedDict()
                 for lemma, synsets in lemma2synsets.items():
                     lemma2layers[lemma] = nn.Linear(2*hidden_dim, len(synsets))
+                    if len(synsets) > self.num_wsd_classes:
+                        self.num_wsd_classes = len(synsets)
                 self.classifiers = nn.Sequential(lemma2layers)
         if "pos_tagger" in self.output_layers:
             self.pos_tags = nn.Linear(2 * hidden_dim, len(pos_tags))
@@ -53,16 +57,24 @@ class WSDModel(nn.Module):
         # Therefore, make sure mask has the same shape as X
         mask = mask[:, :X.shape[1]] # shape is [batch_size, max_length_of_X]
         mask = torch.reshape(mask, (mask.shape[0], mask.shape[1], 1))
-        X_embed = torch.masked_select(X, mask)
-        X_embed = X_embed.view(-1, 2 * self.hidden_dim)  # shape is [num_labels, 2*hidden_dim]
+        X_wsd = torch.masked_select(X, mask)
+        X_wsd = X_wsd.view(-1, 2 * self.hidden_dim)  # shape is [num_labels, 2*hidden_dim]
         outputs = {}
         for layer in self.output_layers:
             if layer == "embed_wsd":
-                outputs["embed_wsd"] = self.dropout(self.output_emb(X_embed))
+                outputs["embed_wsd"] = self.dropout(self.output_emb(X_wsd))
             if layer == "classify_wsd":
-                outputs["classify_wsd"] = pad_sequence(self.dropout(self.output_classify(X)),
-                                                       batch_first=True,
-                                                       padding_value=-100)
+                # outputs["classify_wsd"] = pad_sequence(self.dropout(self.output_classify(X)),
+                #                                        batch_first=True,
+                #                                        padding_value=-100)
+                outputs_classif = []
+                for i, x in enumerate(torch.unbind(X_wsd)):
+                    # lemma_pos = lemmas[i] + "-" + POS_MAP[pos[i]]
+                    output_classif = self.dropout(self.classifiers._modules[lemmas[i]](x))
+                    outputs_classif.extend(torch.cat((output_classif, torch.zeros(self.num_wsd_classes - len(output_classif))), 0))
+                # outputs_classif = pad_sequence(outputs_classif, batch_first=True, padding_value=-100)
+                # outputs_classif = torch.stack(outputs_classif, dim=0)
+                outputs["classify_wsd"] = outputs_classif
             if layer == "pos_tagger":
                 outputs["pos_tagger"] = pad_sequence(self.dropout(self.pos_tags(X)),
                                                      batch_first=True,
