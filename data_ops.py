@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 from conllu import parse
 from torch.utils.data import Dataset
 
-f_sensekey2synset = "/home/lenovo/dev/neural-wsd/data/sensekey2synset.pkl"
+f_sensekey2synset = "C:\Work\dev\wsd-resources\sensekey2synset.pkl"
 sensekey2synset = pickle.load(open(f_sensekey2synset, "rb"))
 CUSTOM_FIELDS = ('form', 'lemma', 'pos', 'synsets')
 
@@ -149,6 +149,7 @@ class WSDataset(Dataset):
         return data
 
     def parse_tsv(self, dataset_path, max_length):
+        files = []
         if os.path.isfile(dataset_path):
             files = [dataset_path]
         elif os.path.isdir(dataset_path):
@@ -214,7 +215,7 @@ def transform_uef2tsv(path_to_dataset, output_path):
                     this_sent += "\t".join([wordform, lemma, pos, ",".join(synsets)]) + "\n"
                 sentence_str.append(this_sent)
     dataset_str = "\n".join(sentence_str)
-    with open(os.path.join(output_path, data.split(".")[0] + ".tsv"), "w") as f:
+    with open(os.path.join(output_path, data.split(".")[0] + ".tsv"), "w", encoding="utf-8") as f:
         f.write(dataset_str)
     return
 
@@ -352,11 +353,11 @@ def get_wordnet_lexicon(lexicon_path, pos_filter=False):
     return lemma2synsets, max_labels
 
 if __name__ == "__main__":
-    # transform_uef2tsv("/home/lenovo/dev/neural-wsd/data/Unified-WSD-framework/WSD_Training_Corpora/SemCor",
-    #                   "/home/lenovo/dev/neural-wsd/data/Unified-WSD-framework/tsv")
+    transform_uef2tsv("C:\Work\dev\wsd-resources\WSD_Unified_Evaluation_Datasets\senseval2",
+                      "C:\Work\dev\wsd-resources\data_tsv")
     # f_dataset = "/home/lenovo/dev/neural-wsd/data/Unified-WSD-framework/tsv/semeval2007.tsv"
     # sentences = parse_tsv(open(f_dataset, "r").read(), 50)
-    transform_original2tsv("/home/lenovo/dev/neural-wsd/data/semcor3.0/all_fixed1",
-                           "/home/lenovo/dev/neural-wsd/data/semcor3.0/all_tsv")
+    # transform_original2tsv("C:\Work\dev\wsd-resources\SemCor",
+    #                        "C:\Work\dev\wsd-resources\data_tsv")
     # fix_semcor_xml("/home/lenovo/dev/neural-wsd/data/semcor3.0/all", "/home/lenovo/dev/neural-wsd/data/semcor3.0/all_fixed1")
     print("This is the end.")

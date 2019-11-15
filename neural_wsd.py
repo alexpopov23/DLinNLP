@@ -22,7 +22,7 @@ def slice_and_pad(tensor, lengths, tag_length=1):
     max_length = max(lengths)
     iterable = iter(tensor)
     padded_tensor = []
-    padding = tag_length * [-1]
+    padding = tag_length * [0]
     for l in lengths:
         if l == 0:
             continue
@@ -265,7 +265,7 @@ if __name__ == "__main__":
                                                      tag_length=model.num_wsd_classes)
                     targets_classify = slice_and_pad(targets_classify, data["lengths_labels"])
                     mask_crf = length_to_mask(data["lengths_labels"], outputs_classify.shape[1])
-                    loss_classify = loss_func_classify(outputs_classify, targets_classify, mask_crf)
+                    loss_classify = loss_func_classify(outputs_classify, targets_classify, mask_crf, reduction='mean')
                     loss += loss_classify * (-1.0 if crf_layer is True else 1.0)
                     average_loss_classify += loss_classify
                 if "pos_tagger" in output_layers:
@@ -296,16 +296,25 @@ if __name__ == "__main__":
                         print("Average embedding loss (training): " + str(average_loss_embed.detach().numpy()))
                         average_loss_overall += average_loss_embed.detach().numpy()
                     if "classify_wsd" in output_layers:
-                        matches_classify, total_classify = calculate_accuracy_classification(
-                                outputs["classify_wsd"].detach().numpy(),
-                                targets_classify.detach().numpy(),
-                                default_disambiguations,
-                                lemmas,
-                                trainset.known_lemmas,
-                                synsets,
-                                lemma2synsets,
-                                synset2id,
-                                single_softmax)
+                        if crf_layer is True:
+                            choices = loss_func_classify.decode(outputs_classify, mask=mask_crf)
+                            matches_classify, total_classify = 0, 0
+                            for i, seq in enumerate(choices):
+                                for j, choice in enumerate(seq):
+                                    if choice == targets_classify[i][j].item():
+                                        matches_classify += 1
+                                    total_classify += 1
+                        else:
+                            matches_classify, total_classify = calculate_accuracy_classification(
+                                    outputs["classify_wsd"].detach().numpy(),
+                                    targets_classify.detach().numpy(),
+                                    default_disambiguations,
+                                    lemmas,
+                                    trainset.known_lemmas,
+                                    synsets,
+                                    lemma2synsets,
+                                    synset2id,
+                                    single_softmax)
                         train_accuracy_classify = matches_classify * 1.0 / total_classify
 
                         print("Training classification accuracy: " + str(train_accuracy_classify))
