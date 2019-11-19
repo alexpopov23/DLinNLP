@@ -9,7 +9,7 @@ from torchcrf import CRF
 
 from auxiliary import Logger
 from data_ops import WSDataset, load_embeddings, get_wordnet_lexicon
-from wsd_model import WSDModel, calculate_accuracy_embedding, calculate_accuracy_classification, calculate_accuracy_pos
+from wsd_model import WSDModel, calculate_accuracy_embedding, calculate_accuracy_classification, calculate_accuracy_pos, calculate_accuracy_crf
 
 def disambiguate_by_default(lemmas, known_lemmas):
     default_disambiguations = []
@@ -62,7 +62,7 @@ def eval_loop(data_loader, known_lemmas, model, output_layers):
         targets_classify = torch.from_numpy(numpy.asarray(eval_data["targets_classify"])[eval_data["mask"]])
         targets_pos = torch.from_numpy(numpy.asarray(eval_data["targets_pos"])[eval_data["pos_mask"]])
         outputs = model(eval_data["inputs"], eval_data["length"], eval_data["mask"], eval_data["pos_mask"], lemmas)
-        accuracy_embed, accuracy_classify = 0.0, 0.0
+        accuracy_embed, accuracy_classify, accuracy_pos = 0.0, 0.0, 0.0
         if "embed_wsd" in output_layers:
             matches_embed, total_embed = calculate_accuracy_embedding(outputs["embed_wsd"],
                                                                       lemmas,
@@ -75,23 +75,44 @@ def eval_loop(data_loader, known_lemmas, model, output_layers):
             total_embed_all += total_embed
             accuracy_embed = matches_embed_all * 1.0 / total_embed_all
         if "classify_wsd" in output_layers:
-            matches_classify, total_classify = calculate_accuracy_classification(
-                outputs["classify_wsd"].detach().numpy(),
-                targets_classify.detach().numpy(),
-                default_disambiguations,
-                lemmas,
-                known_lemmas,
-                synsets,
-                lemma2synsets,
-                synset2id,
-                single_softmax)
+            if crf_layer is True:
+                # targets_classify = torch.masked_select(data["targets_classify"], data["mask"])
+                # loss_classify = loss_func_classify(outputs["classify_wsd"], targets_classify, mask_classify)
+                outputs_classify = slice_and_pad(outputs["classify_wsd"],
+                                                 eval_data["lengths_labels"],
+                                                 tag_length=model.num_wsd_classes)
+                targets_classify = slice_and_pad(targets_classify, eval_data["lengths_labels"])
+                mask_crf_wsd = length_to_mask(eval_data["lengths_labels"], outputs_classify.shape[1])
+                matches_classify, total_classify = calculate_accuracy_crf(loss_func_classify,
+                                                                          outputs_classify,
+                                                                          mask_crf_wsd,
+                                                                          targets_classify)
+            else:
+                matches_classify, total_classify = calculate_accuracy_classification(
+                    outputs["classify_wsd"].detach().numpy(),
+                    targets_classify.detach().numpy(),
+                    default_disambiguations,
+                    lemmas,
+                    known_lemmas,
+                    synsets,
+                    lemma2synsets,
+                    synset2id,
+                    single_softmax)
             matches_classify_all += matches_classify
             total_classify_all += total_classify
             accuracy_classify = matches_classify_all * 1.0 / total_classify_all
         if "pos_tagger" in output_layers:
-            matches_pos, total_pos = calculate_accuracy_pos(
-                outputs["pos_tagger"],
-                targets_pos)
+            if crf_layer is True:
+                targets_pos = eval_data["targets_pos"][:, :outputs["pos_tagger"].shape[1]]
+                mask_crf_pos = eval_data["pos_mask"][:, :outputs["pos_tagger"].shape[1]]
+                matches_pos, total_pos = calculate_accuracy_crf(loss_func_pos,
+                                                                outputs["pos_tagger"],
+                                                                mask_crf_pos,
+                                                                targets_pos)
+            else:
+                matches_pos, total_pos = calculate_accuracy_pos(
+                    outputs["pos_tagger"],
+                    targets_pos)
             accuracy_pos = matches_pos * 1.0 / total_pos
     return accuracy_embed, accuracy_classify, accuracy_pos
 
@@ -140,7 +161,7 @@ if __name__ == "__main__":
                         help='Number of the hidden LSTMs in the forward/backward modules.')
     parser.add_argument('-output_layers', dest='output_layers', required=False, default="embed_wsd",
                         help='What tasks will the NN solve at output? Options: embed_wsd, classify_wsd.'
-                             'More than one can be provided, delimiting them by commas, e.g. "embed_wsd,classiy_wsd"')
+                             'More than one can be provided, delimiting them by commas, e.g. "embed_wsd,classify_wsd"')
     parser.add_argument('-pos_filter', dest='pos_filter', required=False, default="False",
                         help='Whether to use POS information to filter out irrelevant synsets.')
     parser.add_argument('-save_path', dest='save_path', required=False,
@@ -160,6 +181,7 @@ if __name__ == "__main__":
     embeddings, src2id, id2src = load_embeddings(embeddings_path)
     embeddings = torch.Tensor(embeddings)
     embedding_dim = embeddings.shape[1]
+    embeddings_input = args.embeddings_input
     lexicon_path = args.lexicon_path
     lemma2synsets, max_labels = get_wordnet_lexicon(lexicon_path, args.pos_filter)
     crf_layer = True if args.crf_layer == "True" else False
@@ -178,8 +200,10 @@ if __name__ == "__main__":
         synset2id = trainset.known_synsets
     else:
         synset2id = {}
-    devset = WSDataset(dev_path, src2id, embeddings, embedding_dim, max_labels, lemma2synsets, single_softmax, synset2id)
-    testset = WSDataset(test_path, src2id, embeddings, embedding_dim, max_labels, lemma2synsets, single_softmax, synset2id)
+    devset = WSDataset(dev_path, src2id, embeddings, embedding_dim, embeddings_input, max_labels, lemma2synsets,
+                       single_softmax, synset2id)
+    testset = WSDataset(test_path, src2id, embeddings, embedding_dim, embeddings_input, max_labels, lemma2synsets,
+                        single_softmax, synset2id)
 
     # Redirect print statements to both terminal and logfile
     sys.stdout = Logger(os.path.join(save_path, "results.txt"))
@@ -251,29 +275,30 @@ if __name__ == "__main__":
                     average_loss_embed += loss_embed
                 # Calculate loss for the classification method
                 if "classify_wsd" in output_layers:
-                    # targets_classify = torch.from_numpy(numpy.asarray(data["targets_classify"])[data["mask"]])
-                    # mask_classify = torch.reshape(data["mask"], (data["mask"].shape[0], data["mask"].shape[1], 1))
-                    # mask_classify = data["mask"][:, :outputs["classify_wsd"].shape[1]]
-                    # outputs_classify = torch.masked_select(outputs["classify_wsd"],
-                    #                                        torch.reshape(mask_classify, (mask_classify.shape[0],
-                    #                                                                      mask_classify.shape[1],
-                    #                                                                      1)))
-                    targets_classify = torch.masked_select(data["targets_classify"], data["mask"])
-                    # loss_classify = loss_func_classify(outputs["classify_wsd"], targets_classify, mask_classify)
-                    outputs_classify = slice_and_pad(outputs["classify_wsd"],
-                                                     data["lengths_labels"],
-                                                     tag_length=model.num_wsd_classes)
-                    targets_classify = slice_and_pad(targets_classify, data["lengths_labels"])
-                    mask_crf = length_to_mask(data["lengths_labels"], outputs_classify.shape[1])
-                    loss_classify = loss_func_classify(outputs_classify, targets_classify, mask_crf, reduction='mean')
-                    loss += loss_classify * (-1.0 if crf_layer is True else 1.0)
+                    if crf_layer is True:
+                        targets_classify = torch.masked_select(data["targets_classify"], data["mask"])
+                        outputs_classify = slice_and_pad(outputs["classify_wsd"],
+                                                         data["lengths_labels"],
+                                                         tag_length=model.num_wsd_classes)
+                        targets_classify = slice_and_pad(targets_classify, data["lengths_labels"])
+                        mask_crf_wsd = length_to_mask(data["lengths_labels"], outputs_classify.shape[1])
+                        loss_classify = loss_func_classify(outputs_classify, targets_classify, mask_crf_wsd, reduction='mean')
+                        loss_classify *= (-1.0 if crf_layer is True else 1.0)
+                    else:
+                        targets_classify = torch.from_numpy(numpy.asarray(data["targets_classify"])[data["mask"]])
+                        loss_classify = loss_func_classify(outputs["classify_wsd"], targets_classify)
+                    loss += loss_classify
                     average_loss_classify += loss_classify
                 if "pos_tagger" in output_layers:
-                    # targets_pos = torch.from_numpy(numpy.asarray(data["targets_pos"])[data["pos_mask"]])
-                    pos_mask = data["pos_mask"][:, :outputs["pos_tagger"].shape[1]]
-                    targets_pos = data["targets_pos"][:, :outputs["pos_tagger"].shape[1]]
-                    loss_pos = loss_func_pos(outputs["pos_tagger"], targets_pos, pos_mask, reduction="mean")
-                    loss += loss_pos * (-1.0 if crf_layer is True else 1.0)
+                    if crf_layer is True:
+                        mask_crf_pos = data["pos_mask"][:, :outputs["pos_tagger"].shape[1]]
+                        targets_pos = data["targets_pos"][:, :outputs["pos_tagger"].shape[1]]
+                        loss_pos = loss_func_pos(outputs["pos_tagger"], targets_pos, mask_crf_pos, reduction="mean")
+                        loss_pos *= (-1.0 if crf_layer is True else 1.0)
+                    else:
+                        targets_pos = torch.from_numpy(numpy.asarray(data["targets_pos"])[data["pos_mask"]])
+                        loss_pos = loss_func_pos(outputs["pos_tagger"], targets_pos)
+                    loss += loss_pos
                     average_loss_pos += loss_pos
                 # loss = loss_embed + loss_classify
                 loss.backward()
@@ -297,13 +322,10 @@ if __name__ == "__main__":
                         average_loss_overall += average_loss_embed.detach().numpy()
                     if "classify_wsd" in output_layers:
                         if crf_layer is True:
-                            choices = loss_func_classify.decode(outputs_classify, mask=mask_crf)
-                            matches_classify, total_classify = 0, 0
-                            for i, seq in enumerate(choices):
-                                for j, choice in enumerate(seq):
-                                    if choice == targets_classify[i][j].item():
-                                        matches_classify += 1
-                                    total_classify += 1
+                            matches_classify, total_classify = calculate_accuracy_crf(loss_func_classify,
+                                                                                      outputs_classify,
+                                                                                      mask_crf_wsd,
+                                                                                      targets_classify)
                         else:
                             matches_classify, total_classify = calculate_accuracy_classification(
                                     outputs["classify_wsd"].detach().numpy(),
@@ -322,9 +344,15 @@ if __name__ == "__main__":
                         print("Average classification loss (training): " + str(average_loss_classify.detach().numpy()))
                         average_loss_overall += average_loss_classify.detach().numpy()
                     if "pos_tagger" in output_layers:
-                        matches_pos, total_pos = calculate_accuracy_pos(
-                            outputs["pos_tagger"],
-                            targets_pos)
+                        if crf_layer is True:
+                            matches_pos, total_pos = calculate_accuracy_crf(loss_func_pos,
+                                                                            outputs["pos_tagger"],
+                                                                            mask_crf_pos,
+                                                                            targets_pos)
+                        else:
+                            matches_pos, total_pos = calculate_accuracy_pos(
+                                outputs["pos_tagger"],
+                                targets_pos)
                         train_accuracy_pos = matches_pos * 1.0 / total_pos
 
                         print("Training pos tagger accuracy: " + str(train_accuracy_pos))

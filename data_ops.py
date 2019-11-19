@@ -13,9 +13,9 @@ import xml.etree.ElementTree as ET
 from conllu import parse
 from torch.utils.data import Dataset
 
-f_sensekey2synset = "C:\Work\dev\wsd-resources\sensekey2synset.pkl"
+f_sensekey2synset = "/home/lenovo/dev/neural-wsd/data/sensekey2synset.pkl"
 sensekey2synset = pickle.load(open(f_sensekey2synset, "rb"))
-CUSTOM_FIELDS = ('form', 'lemma', 'pos', 'synsets')
+CUSTOM_FIELDS = ('form', 'lemma', 'pos', 'synsets', 'entity')
 
 POS_MAP = {"NOUN": "n", "VERB": "v", "ADJ": "a", "ADV": "r"}
 
@@ -30,16 +30,18 @@ class Sample():
         self.pos = []
         self.lemmas_pos = []
         self.synsets = []
+        self.entities = []
 
 class WSDataset(Dataset):
 
-    def __init__(self, tsv_data, src2id, embeddings, embeddings_dim, max_labels, lemma2synsets, single_softmax,
-                 known_synsets=None):
+    def __init__(self, tsv_data, src2id, embeddings, embeddings_dim, embeddings_input, max_labels, lemma2synsets,
+                 single_softmax, known_synsets=None):
         # Our data has some pretty long sentences, so we will set a large max length
         # Alternatively, can throw them out or truncate them
         self.src2id = src2id
         self.embeddings = embeddings
         self.embeddings_dim = embeddings_dim
+        self.embeddings_input = embeddings_input
         self.max_labels = max_labels
         self.lemma2synsets = lemma2synsets
         self.known_lemmas, self.known_pos = set(), set()
@@ -69,8 +71,9 @@ class WSDataset(Dataset):
         sample = self.data[idx]
         # Get an integer ID for each lemma in the sentence (<UNK> if unfamiliar)
         # Note that we are working with lemmas for the input, not the word forms
-        inputs = [self.src2id[lemma] if lemma in self.src2id
-                  else self.src2id["<UNK>"] for lemma in sample.lemmas]
+        input_source = sample.lemmas if self.embeddings_input == "lemma" else sample.forms
+        inputs = [self.src2id[token] if token in self.src2id
+                  else self.src2id["<UNK>"] for token in input_source]
         targets_embed, neg_targets, targets_classify, targets_pos, mask, pos_mask, lengths_labels = \
             [], [], [], [], [], [], 0
         for i, label in enumerate(sample.synsets):
@@ -132,13 +135,15 @@ class WSDataset(Dataset):
             targets_embed.append(target_embed)
             neg_targets.append(neg_target)
             # targets_classify.append(target_classify)
-        data = {"lemmas": sample.lemmas,
+        data = {"forms": sample.forms,
+                "lemmas": sample.lemmas,
                 "lemmas_pos": sample.lemmas_pos,
                 "length": sample.length,
                 # "lengths_labels": torch.tensor(lengths_labels, dtype=torch.long),
                 "lengths_labels": lengths_labels,
                 "pos": sample.pos,
                 "synsets": sample.synsets,
+                "entities": sample.entities,
                 "inputs": torch.tensor(inputs, dtype=torch.long),
                 "targets_embed": torch.stack(targets_embed).clone().detach(),
                 "neg_targets": torch.stack(neg_targets).clone().detach(),
@@ -167,12 +172,15 @@ class WSDataset(Dataset):
                     pos = token["pos"]
                     # pos = POS_MAP[pos] if pos in POS_MAP else pos
                     lemma_pos = lemma + "-" + POS_MAP[pos] if pos in POS_MAP else pos
+                    entity = token['entity']
                     sample.lemmas.append(lemma)
                     sample.pos.append(pos)
                     sample.lemmas_pos.append(lemma_pos)
+                    sample.entities.append(entity)
                     self.known_lemmas.add(lemma_pos)
                     self.known_pos.add(pos)
                     sample.synsets.append(token["synsets"])
+                    sample.entities.append(token["entity"])
                 sample.length = len(sample.forms)
                 # Take care to pad all sequences to the same length
                 sample.forms += (max_length - len(sample.forms)) * ["<PAD>"]
@@ -180,6 +188,7 @@ class WSDataset(Dataset):
                 sample.pos += (max_length - len(sample.pos)) * "_"
                 sample.lemmas_pos += (max_length - len(sample.lemmas_pos)) * ["<PAD>"]
                 sample.synsets += (max_length - len(sample.synsets)) * "_"
+                sample.entities += (max_length - len(sample.synsets)) * "_"
                 data.append(sample)
         return data
 
@@ -263,6 +272,71 @@ def transform_original2tsv(path_to_dataset, output_path):
             f.write(dataset_str)
     return
 
+def transform_original2tsv(path_to_dataset, output_path):
+    for f_name in os.listdir(path_to_dataset):
+        print(f_name)
+        # with open(os.path.join(path_to_dataset, f_name), "r") as f:
+        # # context = ET.parse(os.path.join(path_to_dataset, f_name)).getroot().get("context")
+        # #     it = itertools.chain('<root>', f, '</root>')
+        # #     f_contents = f.read()
+        #     # root = ET.fromstring('<root>\n' + f_contents + '\n</root>')
+        #     doc = ET.parse(f)
+        paragraphs = ET.parse(os.path.join(path_to_dataset, f_name)).getroot().findall("contextfile")[0].findall("context")[0].findall("p")
+        sentence_str = []
+        for p in paragraphs:
+            sentences = p.findall("s")
+            for sent in sentences:
+                this_sent = ""
+                wfs = sent.findall("wf") + sent.findall("punc")
+                for wf in wfs:
+                    wordform = wf.text
+                    lemma = wf.get("lemma")
+                    if lemma is None:
+                        lemma = wordform
+                    pos = wf.get("pos")
+                    if pos is None:
+                        pos = "."
+                    synsets = wf.get("lexsn")
+                    if synsets is not None:
+                        synsets = synsets.split(";")
+                        # if lemma == "rotting":
+                        #     continue
+                        # for synset in synsets:
+                        #     sense = lemma + "%" + synset
+                        #     if sense not in sensekey2synset:
+                        #         continue
+                        synsets = [sensekey2synset[lemma + "%" + synset] for synset in synsets
+                                   if lemma + "%" + synset in sensekey2synset]
+                    else:
+                        synsets = ["_"]
+                    this_sent += "\t".join([wordform, lemma, pos, ",".join(synsets)]) + "\n"
+                sentence_str.append(this_sent)
+        dataset_str = "\n".join(sentence_str)
+        with open(os.path.join(output_path, f_name + ".tsv"), "w") as f:
+            f.write(dataset_str)
+    return
+
+def transform_bsnlp2tsv(path_to_dataset, output_path):
+    for f_name in os.listdir(path_to_dataset):
+        new_content = ""
+        with open(os.path.join(path_to_dataset, f_name), "r") as f:
+            text = f.read()
+            text = text.replace("</S>    E-SENT\n<S>    B-SENT", "")
+            text = text.replace("<S>    B-SENT\n", "")
+            text = text.replace("\n</S>    E-SENT\n", "")
+            for line in text.split("\n"):
+                if line == "":
+                    new_content += "\n"
+                else:
+                    fields = line.split("\t")
+                    if len(fields) < 2:
+                        pass
+                    new_line = fields[0] + "\t_\t_\t_\t" + fields[1] + "\n"
+                    new_content += new_line
+        with open(os.path.join(output_path, f_name + ".tsv"), "w") as new_f:
+            new_f.write(new_content)
+    return
+
 def fix_semcor_xml(path_to_dataset, output_path):
     for f_name in os.listdir(path_to_dataset):
         new_content = "<root>\n"
@@ -319,6 +393,29 @@ def load_embeddings(embeddings_path):
             embeddings = numpy.concatenate((embeddings, [unk]))
     return embeddings, src2id, id2src
 
+def fiter_embeddings(data, f_embeddings, f_emb_out, f_oov):
+    attested_forms = set()
+    embedded_forms = set()
+    filtered_embeddings = ""
+    for f_name in os.listdir(data):
+        with open(os.path.join(data, f_name), "r") as f:
+            for line in f.readlines():
+                attested_forms.add(line.split("\t")[0])
+    with open(f_embeddings, "r") as embeddings:
+        for line in embeddings.readlines():
+            word = line.split(" ")[0]
+            if word in attested_forms:
+                filtered_embeddings += line + "\n"
+            embedded_forms.add(word)
+    with open(f_emb_out, "w") as emb_out:
+        emb_out.write(filtered_embeddings)
+    oov_forms = attested_forms.difference(embedded_forms)
+    with open(f_oov, "a") as oov:
+        for form in oov_forms:
+            oov.write(form + "\n")
+    return
+
+
 def get_wordnet_lexicon(lexicon_path, pos_filter=False):
     """Reads the WordNet dictionary
 
@@ -353,11 +450,16 @@ def get_wordnet_lexicon(lexicon_path, pos_filter=False):
     return lemma2synsets, max_labels
 
 if __name__ == "__main__":
-    transform_uef2tsv("C:\Work\dev\wsd-resources\WSD_Unified_Evaluation_Datasets\senseval2",
-                      "C:\Work\dev\wsd-resources\data_tsv")
+    # transform_uef2tsv("C:\Work\dev\wsd-resources\WSD_Unified_Evaluation_Datasets\senseval2",
+    #                   "C:\Work\dev\wsd-resources\data_tsv")
     # f_dataset = "/home/lenovo/dev/neural-wsd/data/Unified-WSD-framework/tsv/semeval2007.tsv"
     # sentences = parse_tsv(open(f_dataset, "r").read(), 50)
     # transform_original2tsv("C:\Work\dev\wsd-resources\SemCor",
     #                        "C:\Work\dev\wsd-resources\data_tsv")
     # fix_semcor_xml("/home/lenovo/dev/neural-wsd/data/semcor3.0/all", "/home/lenovo/dev/neural-wsd/data/semcor3.0/all_fixed1")
+    # transform_bsnlp2tsv('/home/lenovo/dev/PostDoc/LREC/BSLNE/BSNLP_test', '/home/lenovo/dev/PostDoc/LREC/BSLNE/tsv_test')
+    fiter_embeddings('/home/lenovo/dev/PostDoc/LREC/BSLNE/tsv_all',
+                     '/home/lenovo/dev/PostDoc/LREC/cc.bg.300.vec',
+                     '/home/lenovo/dev/PostDoc/LREC/cc.bg.300.vec_FILTERED',
+                     '/home/lenovo/dev/PostDoc/LREC/oov.txt')
     print("This is the end.")

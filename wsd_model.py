@@ -189,3 +189,13 @@ def calculate_accuracy_pos(outputs, targets):
     matches = torch.sum(comparison_tensor).numpy()
     total = comparison_tensor.shape[0]
     return matches, total
+
+def calculate_accuracy_crf(loss_func, outputs, mask, targets):
+    choices = loss_func.decode(outputs, mask=mask)
+    matches, total = 0, 0
+    for i, seq in enumerate(choices):
+        for j, choice in enumerate(seq):
+            if choice == targets[i][j].item():
+                matches += 1
+            total += 1
+    return matches, total
