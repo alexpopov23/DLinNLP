@@ -44,9 +44,10 @@ class WSDataset(Dataset):
         self.embeddings_input = embeddings_input
         self.max_labels = max_labels
         self.lemma2synsets = lemma2synsets
-        self.known_lemmas, self.known_pos = set(), set()
+        self.known_lemmas, self.known_pos, self.known_entity_tags = set(), set(), set()
         self.data = self.parse_tsv(tsv_data, 300)
-        self.known_lemmas, self.known_pos = sorted(self.known_lemmas), sorted(self.known_pos)
+        self.known_lemmas, self.known_pos, self.known_entity_tags = \
+            sorted(self.known_lemmas), sorted(self.known_pos), sorted(self.known_entity_tags)
         self.single_softmax = single_softmax
         if self.single_softmax is True:
             if known_synsets is None:
@@ -61,6 +62,7 @@ class WSDataset(Dataset):
             else:
                 self.known_synsets = known_synsets
         self.known_pos = {pos_tag:i for i, pos_tag in enumerate(self.known_pos)}
+        self.known_entity_tags = {entity_tag: i for i, entity_tag in enumerate(self.known_entity_tags)}
 
     def __len__(self):
         return len(self.data)
@@ -74,21 +76,27 @@ class WSDataset(Dataset):
         input_source = sample.lemmas if self.embeddings_input == "lemma" else sample.forms
         inputs = [self.src2id[token] if token in self.src2id
                   else self.src2id["<UNK>"] for token in input_source]
-        targets_embed, neg_targets, targets_classify, targets_pos, mask, pos_mask, lengths_labels = \
-            [], [], [], [], [], [], 0
+        targets_embed, neg_targets, targets_classify, targets_pos, targets_ner, mask, pos_mask, ner_mask, lengths_labels = \
+            [], [], [], [], [], [], [], [], 0
         for i, label in enumerate(sample.synsets):
             lemma_pos = sample.lemmas_pos[i]
             pos = sample.pos[i]
+            entity = sample.entities[i]
             target_embed, neg_target, target_classify = \
                 torch.zeros(self.embeddings_dim), torch.zeros(self.embeddings_dim), torch.zeros(self.max_labels)
             # Get labels for POS tags
             targets_pos.append(self.known_pos[pos] if pos in self.known_pos else -1)
+            targets_ner.append(self.known_entity_tags[entity] if entity in self.known_entity_tags else -1)
             if label == "_":
                 mask.append(False)
                 if sample.pos[i] is not "_":
                     pos_mask.append(True)
                 else:
                     pos_mask.append(False)
+                if sample.entities[i] is not "_":
+                    ner_mask.append(True)
+                else:
+                    ner_mask.append(False)
                 targets_classify.append(-1)
             else:
                 mask.append(True)
@@ -149,8 +157,10 @@ class WSDataset(Dataset):
                 "neg_targets": torch.stack(neg_targets).clone().detach(),
                 "targets_classify": torch.tensor(targets_classify, dtype=torch.long),
                 "targets_pos": torch.tensor(targets_pos, dtype=torch.long),
+                "targets_ner": torch.tensor(targets_ner, dtype=torch.long),
                 "mask": torch.tensor(mask, dtype=torch.bool),
-                "pos_mask": torch.tensor(pos_mask, dtype=torch.bool)}
+                "pos_mask": torch.tensor(pos_mask, dtype=torch.bool),
+                "ner_mask": torch.tensor(ner_mask, dtype=torch.bool)}
         return data
 
     def parse_tsv(self, dataset_path, max_length):
@@ -177,18 +187,18 @@ class WSDataset(Dataset):
                     sample.pos.append(pos)
                     sample.lemmas_pos.append(lemma_pos)
                     sample.entities.append(entity)
+                    sample.synsets.append(token["synsets"])
                     self.known_lemmas.add(lemma_pos)
                     self.known_pos.add(pos)
-                    sample.synsets.append(token["synsets"])
-                    sample.entities.append(token["entity"])
-                sample.length = len(sample.forms)
+                    self.known_entity_tags.add(entity)
+                sample.length = len(sample.forms) if len(sample.forms) < max_length else max_length
                 # Take care to pad all sequences to the same length
-                sample.forms += (max_length - len(sample.forms)) * ["<PAD>"]
-                sample.lemmas += (max_length - len(sample.lemmas)) * ["<PAD>"]
-                sample.pos += (max_length - len(sample.pos)) * "_"
-                sample.lemmas_pos += (max_length - len(sample.lemmas_pos)) * ["<PAD>"]
-                sample.synsets += (max_length - len(sample.synsets)) * "_"
-                sample.entities += (max_length - len(sample.synsets)) * "_"
+                sample.forms = (sample.forms + (max_length - len(sample.forms)) * ["<PAD>"])[:max_length]
+                sample.lemmas = (sample.lemmas + (max_length - len(sample.lemmas)) * ["<PAD>"])[:max_length]
+                sample.pos = (sample.pos + (max_length - len(sample.pos)) * ["_"])[:max_length]
+                sample.lemmas_pos = (sample.lemmas_pos + (max_length - len(sample.lemmas_pos)) * ["<PAD>"])[:max_length]
+                sample.synsets = (sample.synsets + (max_length - len(sample.synsets)) * ["_"])[:max_length]
+                sample.entities = (sample.entities + (max_length - len(sample.entities)) * ["_"])[:max_length]
                 data.append(sample)
         return data
 

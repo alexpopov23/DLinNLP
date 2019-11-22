@@ -12,7 +12,7 @@ POS_MAP = {"NOUN": "n", "VERB": "v", "ADJ": "a", "ADV": "r"}
 class WSDModel(nn.Module):
 
     def __init__(self, embeddings_dim, embedding_weights, hidden_dim, hidden_layers, dropout,
-                 output_layers=["embed_wsd"], lemma2synsets=None, synsets2id={}, pos_tags={}):
+                 output_layers=["embed_wsd"], lemma2synsets=None, synsets2id={}, pos_tags={}, entity_tags={}):
         super(WSDModel, self).__init__()
         self.output_layers = output_layers
         self.hidden_layers = hidden_layers
@@ -43,6 +43,8 @@ class WSDModel(nn.Module):
                 self.classifiers = nn.Sequential(lemma2layers)
         if "pos_tagger" in self.output_layers:
             self.pos_tags = nn.Linear(2 * hidden_dim, len(pos_tags))
+        if "ner" in self.output_layers:
+            self.ner = nn.Linear(2 * hidden_dim, len(entity_tags))
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, X, X_lengths, mask, pos_mask, lemmas):
@@ -79,6 +81,10 @@ class WSDModel(nn.Module):
                 outputs["pos_tagger"] = pad_sequence(self.dropout(self.pos_tags(X)),
                                                      batch_first=True,
                                                      padding_value=-100)
+            if layer == "ner":
+                outputs["ner"] = pad_sequence(self.ner(X),
+                                              batch_first=True,
+                                              padding_value=-100)
         return outputs
 
     def forward_old(self, X, X_lengths, mask, pos_mask, lemmas):
@@ -199,3 +205,69 @@ def calculate_accuracy_crf(loss_func, outputs, mask, targets):
                 matches += 1
             total += 1
     return matches, total
+
+def calculate_f1_ner(outputs, targets, lengths, entity2id):
+    id2entity = {i:entity for entity, i in entity2id.items()}
+    buffer = []
+    entities = []
+    tag_collections = [outputs, targets]
+    for collection in tag_collections:
+        tags = []
+        for i, seq in enumerate(collection):
+            if len(buffer) != 0:
+                tags.append(buffer)
+                buffer = []
+            for j, tag in enumerate(seq):
+                if j >= lengths[i]:
+                    break
+                if tag == entity2id["O"]:
+                    if len(buffer) != 0:    # if buffer not empty, then write the NE to list
+                        tags.append(buffer)
+                        buffer = []
+                else:
+                    id1, id2 = id2entity[tag].split("-")    # get B/I and EVT/LOC/ORG/PER/PRO/etc tags
+                    if id1 == "B":
+                        if len(buffer) != 0:    # if buffer not empty, write the NE to list
+                            tags.append(buffer)
+                        buffer = [i, id2, j, j]    # initiate new entity entry in buffer
+                    elif id1 == "I":
+                        if len(buffer) == 0:    # if I-tag is an island, disregard it
+                            continue
+                        elif id2 != buffer[1]:    # if type of entity doesn't match what's in buffer, write buffer without current tag
+                            tags.append(buffer)
+                            buffer = []
+                        else:    # otherwise, add new end index to buffer
+                            buffer[3] = j
+        if len(buffer) != 0:
+            tags.append(buffer)
+        entities.append(tags)
+    # get counts on false positives, true positives and false negatives
+    tps, fps, fns = 0, 0, 0
+    for ent in entities[0]:
+        if ent in entities[1]:
+            tps += 1
+        else:
+            fps += 1
+    for ent in entities[1]:
+        if ent not in entities[0]:
+            fns += 1
+    # tps = len(entities[0].intersection[1])
+    # fps = len(entities[0] - entities[1])
+    # fns = len(entities[1] - entities[0])
+    if tps + fps == 0:
+        precision = 0.0
+    else:
+        precision = 1.0 * tps / (tps + fps)
+    recall = 1.0 * tps / (tps + fns)
+    if precision + recall == 0:
+        f1 = 0.0
+    else:
+        f1 = 2 * (precision * recall) / (precision + recall)
+    return f1
+
+if __name__ == "__main__":
+    test_seq_out = [[10, 10, 0, 5, 5, 10, 10, 2, 10, 3, 4, 9, 8, 10, 8, 1 ], [10, 10, 10]]
+    test_seq_gold = [[10, 10, 1, 6, 6, 10, 10, 2, 10, 3, 4, 10, 3, 10, 10, 1], [10, 10, 2]]
+    entity2id = {'B-EVT': 0, 'B-LOC': 1, 'B-ORG': 2, 'B-PER': 3, 'B-PRO': 4, 'I-EVT': 5,
+                 'I-LOC': 6, 'I-ORG': 7, 'I-PER': 8, 'I-PRO': 9, 'O': 10}
+    print(calculate_f1_ner(test_seq_out, test_seq_gold, entity2id))

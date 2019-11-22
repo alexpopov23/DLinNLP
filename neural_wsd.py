@@ -9,7 +9,7 @@ from torchcrf import CRF
 
 from auxiliary import Logger
 from data_ops import WSDataset, load_embeddings, get_wordnet_lexicon
-from wsd_model import WSDModel, calculate_accuracy_embedding, calculate_accuracy_classification, calculate_accuracy_pos, calculate_accuracy_crf
+from wsd_model import WSDModel, calculate_accuracy_embedding, calculate_accuracy_classification, calculate_accuracy_pos, calculate_accuracy_crf, calculate_f1_ner
 
 def disambiguate_by_default(lemmas, known_lemmas):
     default_disambiguations = []
@@ -114,7 +114,14 @@ def eval_loop(data_loader, known_lemmas, model, output_layers):
                     outputs["pos_tagger"],
                     targets_pos)
             accuracy_pos = matches_pos * 1.0 / total_pos
-    return accuracy_embed, accuracy_classify, accuracy_pos
+        if "ner" in output_layers:
+            mask_crf_ner = eval_data["ner_mask"][:, :outputs["ner"].shape[1]]
+            targets_ner = eval_data["targets_ner"][:, :outputs["ner"].shape[1]]
+            f1_ner = calculate_f1_ner(loss_func_ner.decode(outputs["ner"], mask=mask_crf_ner),
+                                      targets_ner.numpy(),
+                                      eval_data["length"],
+                                      trainset.known_entity_tags)
+    return accuracy_embed, accuracy_classify, accuracy_pos, f1_ner
 
 if __name__ == "__main__":
 
@@ -195,7 +202,7 @@ if __name__ == "__main__":
     train_path = args.train_data_path
     dev_path = args.dev_data_path
     test_path = args.test_data_path
-    trainset = WSDataset(train_path, src2id, embeddings, embedding_dim, max_labels, lemma2synsets, single_softmax)
+    trainset = WSDataset(train_path, src2id, embeddings, embedding_dim, embeddings_input, max_labels, lemma2synsets, single_softmax)
     if single_softmax is True:
         synset2id = trainset.known_synsets
     else:
@@ -224,14 +231,19 @@ if __name__ == "__main__":
 
     # Construct the model
     model = WSDModel(embedding_dim, embeddings, hiden_neurons, hiden_layers, dropout, output_layers, lemma2synsets,
-                     synset2id, trainset.known_pos)
+                     synset2id, trainset.known_pos, trainset.known_entity_tags)
     loss_func_embed = torch.nn.MSELoss()
     if crf_layer is True:
-        loss_func_classify = CRF(model.num_wsd_classes, batch_first=True)
-        loss_func_pos = CRF(len(trainset.known_pos), batch_first=True)
+        if "classify_wsd" in output_layers:
+            loss_func_classify = CRF(model.num_wsd_classes, batch_first=True)
+        if "pos_tagger" in output_layers:
+            loss_func_pos = CRF(len(trainset.known_pos), batch_first=True)
+        if "ner" in output_layers:
+            loss_func_ner = CRF(len(trainset.known_entity_tags), batch_first=True)
     else:
         loss_func_classify = torch.nn.CrossEntropyLoss(ignore_index=-100)
         loss_func_pos = torch.nn.CrossEntropyLoss()
+        loss_func_ner = torch.nn.CrossEntropyLoss()
     # loss_func_classify = torch.nn.BCEWithLogitsLoss()
     optimizer = torch.optim.Adam(model.parameters())
     # optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate)
@@ -251,7 +263,8 @@ if __name__ == "__main__":
         eval_at = 100
         for epoch in range(100):
             print("***** Start of epoch " + str(epoch) + " *****")
-            average_loss_embed, average_loss_classify, average_loss_pos, average_loss_overall = 0.0, 0.0, 0.0, 0.0
+            average_loss_embed, average_loss_classify, average_loss_pos, average_loss_ner, average_loss_overall = \
+                0.0, 0.0, 0.0, 0.0, 0.0
             for step, data in enumerate(trainloader):
                 model.train()
                 optimizer.zero_grad()
@@ -300,6 +313,17 @@ if __name__ == "__main__":
                         loss_pos = loss_func_pos(outputs["pos_tagger"], targets_pos)
                     loss += loss_pos
                     average_loss_pos += loss_pos
+                if "ner" in output_layers:
+                    if crf_layer is True:
+                        mask_crf_ner = data["ner_mask"][:, :outputs["ner"].shape[1]]
+                        targets_ner = data["targets_ner"][:, :outputs["ner"].shape[1]]
+                        loss_ner = loss_func_ner(outputs["ner"], targets_ner, mask_crf_ner, reduction="mean")
+                        loss_ner *= (-1.0 if crf_layer is True else 1.0)
+                    else:
+                        targets_ner = torch.from_numpy(numpy.asarray(data["targets_ner"])[data["pos_mask"]])
+                        loss_ner = loss_func_ner(outputs["ner"], targets_ner)
+                    loss += loss_ner
+                    average_loss_ner += loss_ner
                 # loss = loss_embed + loss_classify
                 loss.backward()
                 optimizer.step()
@@ -359,15 +383,38 @@ if __name__ == "__main__":
                         average_loss_pos /= (eval_at if step != 0 else 1)
                         print("Average pos tagger loss (training): " + str(average_loss_pos.detach().numpy()))
                         average_loss_overall += average_loss_pos.detach().numpy()
+                    if "ner" in output_layers:
+                        if crf_layer is True:
+                            matches_ner, total_ner = calculate_accuracy_crf(loss_func_ner,
+                                                                            outputs["ner"],
+                                                                            mask_crf_ner,
+                                                                            targets_ner)
+                            f1_ner = calculate_f1_ner(loss_func_ner.decode(outputs["ner"], mask=mask_crf_ner),
+                                                      targets_ner.numpy(),
+                                                      data["length"],
+                                                      trainset.known_entity_tags)
+                        else:
+                            matches_ner, total_ner = calculate_accuracy_pos(
+                                outputs["pos_tagger"],
+                                targets_pos)
+                        train_accuracy_ner = matches_ner * 1.0 / total_ner
+
+                        print("Training ner tagger accuracy: " + str(train_accuracy_ner))
+                        print("F1-score for NER: " + str(f1_ner))
+                        average_loss_ner /= (eval_at if step != 0 else 1)
+                        print("Average ner tagger loss (training): " + str(average_loss_ner.detach().numpy()))
+                        average_loss_overall += average_loss_ner.detach().numpy()
                     print("Average overall loss (training): " + str(average_loss_overall))
-                    average_loss_embed, average_loss_classif, average_loss_poss, average_loss_overall = 0.0, 0.0, 0.0, 0.0
+                    average_loss_embed, average_loss_classif, average_loss_poss, average_loss_ner, average_loss_overall = \
+                        0.0, 0.0, 0.0, 0.0, 0.0
 
                     # Loop over the dev dataset
-                    dev_accuracy_embed, dev_accuracy_classify, dev_accuracy_pos = \
+                    dev_accuracy_embed, dev_accuracy_classify, dev_accuracy_pos, dev_f1_ner = \
                         eval_loop(devloader, trainset.known_lemmas, model, output_layers)
                     print("Dev embedding accuracy: " + str(dev_accuracy_embed))
                     print("Dev classification accuracy: " + str(dev_accuracy_classify))
                     print("Dev pos tagging accuracy: " + str(dev_accuracy_pos))
+                    print("Dev ner F1 score: " + str(dev_f1_ner))
                     best_result = False
                     if dev_accuracy_embed > best_accuracy_embed:
                         for file in os.listdir(save_path):
