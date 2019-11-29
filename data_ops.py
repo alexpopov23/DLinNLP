@@ -35,7 +35,7 @@ class Sample():
 class WSDataset(Dataset):
 
     def __init__(self, tsv_data, src2id, embeddings, embeddings_dim, embeddings_input, max_labels, lemma2synsets,
-                 single_softmax, known_synsets=None):
+                 single_softmax, known_synsets=None, pos_map=None):
         # Our data has some pretty long sentences, so we will set a large max length
         # Alternatively, can throw them out or truncate them
         self.src2id = src2id
@@ -45,7 +45,9 @@ class WSDataset(Dataset):
         self.max_labels = max_labels
         self.lemma2synsets = lemma2synsets
         self.known_lemmas, self.known_pos, self.known_entity_tags = set(), set(), set()
-        self.data = self.parse_tsv(tsv_data, 300)
+        if pos_map is not None:
+            pos_map = get_pos_tagset(pos_map, "medium")
+        self.data = self.parse_tsv(tsv_data, 300, pos_map)
         self.known_lemmas, self.known_pos, self.known_entity_tags = \
             sorted(self.known_lemmas), sorted(self.known_pos), sorted(self.known_entity_tags)
         self.single_softmax = single_softmax
@@ -79,6 +81,7 @@ class WSDataset(Dataset):
         targets_embed, neg_targets, targets_classify, targets_pos, targets_ner, mask, pos_mask, ner_mask, lengths_labels = \
             [], [], [], [], [], [], [], [], 0
         for i, label in enumerate(sample.synsets):
+            lemma = sample.lemmas[i]
             lemma_pos = sample.lemmas_pos[i]
             pos = sample.pos[i]
             entity = sample.entities[i]
@@ -101,8 +104,9 @@ class WSDataset(Dataset):
             else:
                 mask.append(True)
                 pos_mask.append(True)
+                ner_mask.append(True)
                 # lemma_pos = sample.lemmas[i] + "-" + sample.pos[i] # e.g. "bear-n"
-                all_synsets = self.lemma2synsets[lemma_pos]
+                all_synsets = self.lemma2synsets[lemma] # TODO: parametrize this
                 # Take care of cases of multiple labels, e.g. "01104026-a,00357790-a"
                 these_synsets = label.split(",")
                 num_labels = len(these_synsets)
@@ -163,7 +167,7 @@ class WSDataset(Dataset):
                 "ner_mask": torch.tensor(ner_mask, dtype=torch.bool)}
         return data
 
-    def parse_tsv(self, dataset_path, max_length):
+    def parse_tsv(self, dataset_path, max_length, pos_map=None):
         files = []
         if os.path.isfile(dataset_path):
             files = [dataset_path]
@@ -180,15 +184,26 @@ class WSDataset(Dataset):
                     lemma = lemma.replace("'", "APOSTROPHE_")
                     lemma = lemma.replace(".", "DOT_")
                     pos = token["pos"]
+                    if pos_map is not None:
+                        if pos in pos_map:
+                            pos = pos_map[pos]
                     # pos = POS_MAP[pos] if pos in POS_MAP else pos
                     lemma_pos = lemma + "-" + POS_MAP[pos] if pos in POS_MAP else pos
+                    synsets = token["synsets"]
                     entity = token['entity']
                     sample.lemmas.append(lemma)
                     sample.pos.append(pos)
                     sample.lemmas_pos.append(lemma_pos)
                     sample.entities.append(entity)
-                    sample.synsets.append(token["synsets"])
-                    self.known_lemmas.add(lemma_pos)
+                    sample.synsets.append(synsets)
+                    if synsets != "_":
+                        if lemma not in self.lemma2synsets:
+                            self.lemma2synsets[lemma] = [synsets]
+                        else:
+                            if synsets not in self.lemma2synsets[lemma]:
+                                self.lemma2synsets[lemma].append(synsets)
+                    # self.known_lemmas.add(lemma_pos) TODO: parametrize this
+                    self.known_lemmas.add(lemma)
                     self.known_pos.add(pos)
                     self.known_entity_tags.add(entity)
                 sample.length = len(sample.forms) if len(sample.forms) < max_length else max_length
@@ -326,25 +341,34 @@ def transform_original2tsv(path_to_dataset, output_path):
             f.write(dataset_str)
     return
 
-def transform_bsnlp2tsv(path_to_dataset, output_path):
+def transform_bsnlp2tsv(path_to_dataset, output_path, btb=False, separator="    "):
     for f_name in os.listdir(path_to_dataset):
         new_content = ""
         with open(os.path.join(path_to_dataset, f_name), "r") as f:
             text = f.read()
-            text = text.replace("</S>    E-SENT\n<S>    B-SENT", "")
-            text = text.replace("<S>    B-SENT\n", "")
-            text = text.replace("\n</S>    E-SENT\n", "")
-            for line in text.split("\n"):
-                if line == "":
-                    new_content += "\n"
-                else:
-                    fields = line.split("\t")
-                    if len(fields) < 2:
-                        pass
-                    new_line = fields[0] + "\t_\t_\t_\t" + fields[1] + "\n"
-                    new_content += new_line
+            text = text.replace("</S>" + "\t" + "E-SENT\n<S>" + "\t" + "B-SENT", "")
+            text = text.replace("</S>" + "    " + "E-SENT\n<S>" + "    " + "B-SENT", "")
+            text = text.replace("<S>" + "\t" + "B-SENT\n", "")
+            text = text.replace("<S>" + "    " + "B-SENT\n", "")
+            text = text.replace("\n</S>" + "\t" + "E-SENT\n", "")
+            text = text.replace("\n</S>" + "    " + "E-SENT\n", "")
+            if btb is not True:
+                for line in text.split("\n"):
+                    if line == "":
+                        new_content += "\n"
+                    else:
+                        fields = line.split("\t")
+                        if len(fields) < 2:
+                            pass
+                        new_line = fields[0] + "\t_\t_\t_\t" + fields[1] + "\n"
+                        new_content += new_line
+            else:
+                text = text.replace("\t0\t", "\t_\t")
+                text = text.replace("\tLat", "\tunknown\tLat")
+                text = text.replace("Unknown\t_", "unknown\tunknown\t_")
+                new_content = text
         with open(os.path.join(output_path, f_name + ".tsv"), "w") as new_f:
-            new_f.write(new_content)
+            new_f.write(new_content.rstrip("\n"))
     return
 
 def fix_semcor_xml(path_to_dataset, output_path):
@@ -459,6 +483,27 @@ def get_wordnet_lexicon(lexicon_path, pos_filter=False):
     lemma2synsets = collections.OrderedDict(sorted(lemma2synsets.items()))
     return lemma2synsets, max_labels
 
+def get_pos_tagset(f_mapping, granularity="medium"):
+
+    postag2postag = {}
+    known_postags = set()
+    doc = ET.parse(f_mapping)
+    root = doc.getroot()
+    pairs = root.findall("pair")
+    if granularity == "medium":
+        for pair in pairs:
+            specific_tag = pair.find("item").text
+            coarse_tag = pair.find("item1").text
+            postag2postag[specific_tag] = coarse_tag
+            known_postags.add(coarse_tag)
+    elif granularity == "coarse":
+        for pair in pairs:
+            specific_tag = pair.find("item").text
+            coarse_tag = pair.find("item2")
+            postag2postag[specific_tag] = coarse_tag
+            known_postags.add(coarse_tag)
+    return postag2postag
+
 if __name__ == "__main__":
     # transform_uef2tsv("C:\Work\dev\wsd-resources\WSD_Unified_Evaluation_Datasets\senseval2",
     #                   "C:\Work\dev\wsd-resources\data_tsv")
@@ -468,8 +513,12 @@ if __name__ == "__main__":
     #                        "C:\Work\dev\wsd-resources\data_tsv")
     # fix_semcor_xml("/home/lenovo/dev/neural-wsd/data/semcor3.0/all", "/home/lenovo/dev/neural-wsd/data/semcor3.0/all_fixed1")
     # transform_bsnlp2tsv('/home/lenovo/dev/PostDoc/LREC/BSLNE/BSNLP_test', '/home/lenovo/dev/PostDoc/LREC/BSLNE/tsv_test')
-    fiter_embeddings('/home/lenovo/dev/PostDoc/LREC/BSLNE/tsv_all',
-                     '/home/lenovo/dev/PostDoc/LREC/cc.bg.300.vec',
-                     '/home/lenovo/dev/PostDoc/LREC/cc.bg.300.vec_FILTERED',
-                     '/home/lenovo/dev/PostDoc/LREC/oov.txt')
+    # fiter_embeddings('/home/lenovo/dev/PostDoc/LREC/BSLNE/tsv_all',
+    #                  '/home/lenovo/dev/PostDoc/LREC/cc.bg.300.vec',
+    #                  '/home/lenovo/dev/PostDoc/LREC/cc.bg.300.vec_FILTERED',
+    #                  '/home/lenovo/dev/PostDoc/LREC/oov.txt')
+    transform_bsnlp2tsv("/home/lenovo/dev/PostDoc/LREC/BSLNE/TestReady-20191129",
+                        "/home/lenovo/dev/PostDoc/LREC/BSLNE/tsv_test",
+                        False,
+                        "\t")
     print("This is the end.")
