@@ -11,6 +11,8 @@
 -embeddings_input
 lemma
 -lexicon_path
+/home/lenovo/dev/neural-wsd/data/btbwn-dict34all.txt
+-lexicon_path
 /home/lenovo/tools/ukb_wsd/lkb_sources/wn30.lex
 -mode
 training

@@ -49,6 +49,7 @@ class WSDModel(nn.Module):
 
     def forward(self, X, X_lengths, mask, pos_mask, lemmas):
         X = self.word_embeddings(X) # shape is [batch_size,max_length,embeddings_dim]
+        X = self.dropout(X)
         X = torch.nn.utils.rnn.pack_padded_sequence(X,
                                                     X_lengths,
                                                     batch_first=True,

@@ -61,11 +61,11 @@ def eval_loop(data_loader, known_lemmas, model, output_layers):
         lemmas = numpy.asarray(eval_data['lemmas']).transpose()[eval_data["mask"]] # TODO: parametrize
         default_disambiguations = disambiguate_by_default(lemmas, known_lemmas)
         synsets = numpy.asarray(eval_data['synsets']).transpose()[eval_data["mask"]]
-        pos = numpy.asarray(eval_data['pos']).transpose()[eval_data["mask"]]
-        targets_classify = torch.from_numpy(numpy.asarray(eval_data["targets_classify"])[eval_data["mask"]])
-        targets_pos = torch.from_numpy(numpy.asarray(eval_data["targets_pos"])[eval_data["pos_mask"]])
+        # pos = numpy.asarray(eval_data['pos']).transpose()[eval_data["mask"]]
+        # targets_classify = torch.from_numpy(numpy.asarray(eval_data["targets_classify"])[eval_data["mask"]])
+        # targets_pos = torch.from_numpy(numpy.asarray(eval_data["targets_pos"])[eval_data["pos_mask"]])
         outputs = model(eval_data["inputs"], eval_data["length"], eval_data["mask"], eval_data["pos_mask"], lemmas)
-        accuracy_embed, accuracy_classify, accuracy_pos = 0.0, 0.0, 0.0
+        accuracy_embed, accuracy_classify, accuracy_pos, f1_ner = 0.0, 0.0, 0.0, 0.0
         if "embed_wsd" in output_layers:
             matches_embed, total_embed = calculate_accuracy_embedding(outputs["embed_wsd"],
                                                                       lemmas,
@@ -80,17 +80,6 @@ def eval_loop(data_loader, known_lemmas, model, output_layers):
         if "classify_wsd" in output_layers:
             if crf_layer is True:
                 targets_classify = torch.masked_select(eval_data["targets_classify"], eval_data["mask"])
-                loss_classify = loss_func_classify(outputs["classify_wsd"], targets_classify)
-                # outputs_classify = slice_and_pad(outputs["classify_wsd"],
-                #                                  eval_data["lengths_labels"],
-                #                                  tag_length=model.num_wsd_classes)
-                # targets_classify = slice_and_pad(targets_classify, eval_data["lengths_labels"])
-                # mask_crf_wsd = length_to_mask(eval_data["lengths_labels"], outputs_classify.shape[1])
-                # matches_classify, total_classify = calculate_accuracy_crf(loss_func_classify,
-                #                                                           outputs_classify,
-                #                                                           mask_crf_wsd,
-                #                                                           targets_classify)
-            # else:
                 matches_classify, total_classify = calculate_accuracy_classification(
                     outputs["classify_wsd"].detach().numpy(),
                     targets_classify.detach().numpy(),
@@ -113,14 +102,25 @@ def eval_loop(data_loader, known_lemmas, model, output_layers):
                                                                 mask_crf_pos,
                                                                 targets_pos)
             else:
-                matches_pos, total_pos = calculate_accuracy_pos(
-                    outputs["pos_tagger"],
-                    targets_pos)
+                targets_pos = torch.from_numpy(numpy.asarray(eval_data["targets_pos"])[eval_data["pos_mask"]])
+                mask_pos = eval_data["pos_mask"][:, :outputs["pos_tagger"].shape[1]]
+                mask_pos = torch.reshape(mask_pos, (mask_pos.shape[0], mask_pos.shape[1], 1))
+                outputs_pos = torch.masked_select(outputs["pos_tagger"], mask_pos).view(-1, len(trainset.known_pos))
+                matches_pos, total_pos = calculate_accuracy_pos(outputs_pos, targets_pos)
             accuracy_pos = matches_pos * 1.0 / total_pos
         if "ner" in output_layers:
-            mask_crf_ner = eval_data["ner_mask"][:, :outputs["ner"].shape[1]]
-            targets_ner = eval_data["targets_ner"][:, :outputs["ner"].shape[1]]
-            f1_ner, _ = calculate_f1_ner(loss_func_ner.decode(outputs["ner"], mask=mask_crf_ner),
+            outputs_ner = outputs["ner"]
+            if crf_layer is True:
+                mask_crf_ner = eval_data["ner_mask"][:, :outputs["ner"].shape[1]]
+                targets_ner = eval_data["targets_ner"][:, :outputs["ner"].shape[1]]
+                outputs_ner = loss_func_ner.decode(outputs_ner, mask=mask_crf_ner)
+            else:
+                targets_ner = torch.from_numpy(numpy.asarray(eval_data["targets_ner"])[eval_data["ner_mask"]])
+                outputs_ner = outputs["ner"]
+                outputs_ner = torch.argmax(outputs_ner, dim=2)
+                targets_ner = slice_and_pad(targets_ner, eval_data["length"])
+                outputs_ner = outputs_ner.numpy()
+            f1_ner, _ = calculate_f1_ner(outputs_ner,
                                          targets_ner.numpy(),
                                          eval_data["length"],
                                          trainset.known_entity_tags)
@@ -304,8 +304,10 @@ if __name__ == "__main__":
 
     # Train loop
     else:
+        print(args)
         least_loss = 0.0
-        best_accuracy_embed, best_accuracy_classify, best_accuracy_pos = 0.0, 0.0, 0.0
+        best_accuracy_embed, best_accuracy_classify, best_accuracy_pos, best_f1_ner = 0.0, 0.0, 0.0, 0.0
+        best_test_embed, best_test_classify, best_test_pos, best_test_ner = 0.0, 0.0, 0.0, 0.0
         eval_at = 100
         for epoch in range(100):
             print("***** Start of epoch " + str(epoch) + " *****")
@@ -347,7 +349,10 @@ if __name__ == "__main__":
                         loss_pos *= (-1.0 if crf_layer is True else 1.0)
                     else:
                         targets_pos = torch.from_numpy(numpy.asarray(data["targets_pos"])[data["pos_mask"]])
-                        loss_pos = loss_func_pos(outputs["pos_tagger"], targets_pos)
+                        mask_pos = data["pos_mask"][:, :outputs["pos_tagger"].shape[1]]
+                        mask_pos = torch.reshape(mask_pos, (mask_pos.shape[0], mask_pos.shape[1], 1))
+                        outputs_pos = torch.masked_select(outputs["pos_tagger"], mask_pos).view(-1, len(trainset.known_pos))
+                        loss_pos = loss_func_pos(outputs_pos, targets_pos)
                     loss += loss_pos
                     average_loss_pos += loss_pos
                 if "ner" in output_layers:
@@ -357,8 +362,12 @@ if __name__ == "__main__":
                         loss_ner = loss_func_ner(outputs["ner"], targets_ner, mask_crf_ner, reduction="mean")
                         loss_ner *= (-1.0 if crf_layer is True else 1.0)
                     else:
-                        targets_ner = torch.from_numpy(numpy.asarray(data["targets_ner"])[data["pos_mask"]])
-                        loss_ner = loss_func_ner(outputs["ner"], targets_ner)
+                        targets_ner = torch.from_numpy(numpy.asarray(data["targets_ner"])[data["ner_mask"]])
+                        mask_ner = data["ner_mask"][:, :outputs["ner"].shape[1]]
+                        # mask_ner = mask_ner[:, :outputs["ner"].shape[1]]
+                        mask_ner = torch.reshape(mask_ner, (mask_ner.shape[0], mask_ner.shape[1], 1))
+                        outputs_ner = torch.masked_select(outputs["ner"], mask_ner).view(-1, len(trainset.known_entity_tags))
+                        loss_ner = loss_func_ner(outputs_ner, targets_ner)
                     loss += loss_ner
                     average_loss_ner += loss_ner
                 # loss = loss_embed + loss_classify
@@ -406,7 +415,7 @@ if __name__ == "__main__":
                                                                             targets_pos)
                         else:
                             matches_pos, total_pos = calculate_accuracy_pos(
-                                outputs["pos_tagger"],
+                                outputs_pos,
                                 targets_pos)
                         train_accuracy_pos = matches_pos * 1.0 / total_pos
 
@@ -420,14 +429,17 @@ if __name__ == "__main__":
                                                                             outputs["ner"],
                                                                             mask_crf_ner,
                                                                             targets_ner)
-                            f1_ner, _ = calculate_f1_ner(loss_func_ner.decode(outputs["ner"], mask=mask_crf_ner),
-                                                         targets_ner.numpy(),
-                                                         data["length"],
-                                                         trainset.known_entity_tags)
+                            outputs_ner = loss_func_ner.decode(outputs["ner"], mask=mask_crf_ner)
                         else:
-                            matches_ner, total_ner = calculate_accuracy_pos(
-                                outputs["pos_tagger"],
-                                targets_pos)
+                            matches_ner, total_ner = calculate_accuracy_pos(outputs_ner, targets_ner)
+                            outputs_ner = torch.argmax(outputs_ner, dim=1)
+                            outputs_ner = slice_and_pad(outputs_ner, data["length"])
+                            targets_ner = slice_and_pad(targets_ner, data["length"])
+                            outputs_ner = outputs_ner.numpy()
+                        f1_ner, _ = calculate_f1_ner(outputs_ner,
+                                                     targets_ner.numpy(),
+                                                     data["length"],
+                                                     trainset.known_entity_tags)
                         train_accuracy_ner = matches_ner * 1.0 / total_ner
 
                         print("Training ner tagger accuracy: " + str(train_accuracy_ner))
@@ -472,13 +484,33 @@ if __name__ == "__main__":
                                                                     + "-pos_tagger=" + str(dev_accuracy_pos)[:7] + ".pt"))
                         best_accuracy_pos = dev_accuracy_pos
                         best_result = True
+                    if dev_f1_ner > best_f1_ner:
+                        for file in os.listdir(save_path):
+                            if "ner" in file:
+                                os.remove(os.path.join(save_path, file))
+                        torch.save(model.state_dict(), os.path.join(save_path, "epoch" + str(epoch) + "-step" + str(step)
+                                                                    + "-ner=" + str(dev_accuracy_pos)[:7] + ".pt"))
+                        best_f1_ner = dev_f1_ner
+                        best_result = True
                     if best_result is True:
                         # Eval on the test dataset as well
                         test_accuracy_embed, test_accuracy_classify, test_pos_accuracy, test_n1_fscore = \
                             eval_loop(testloader, trainset.known_lemmas, model, output_layers)
+                        best_test_embed = test_accuracy_embed \
+                            if test_accuracy_embed > best_test_embed else best_test_embed
+                        best_test_classify = test_accuracy_classify \
+                            if test_accuracy_classify > best_test_classify else best_test_classify
+                        best_test_pos = test_pos_accuracy \
+                            if test_pos_accuracy > best_test_pos else best_test_pos
+                        best_test_ner = test_n1_fscore \
+                            if test_n1_fscore > best_test_ner else best_test_ner
                         print("Test embedding accuracy: " + str(test_accuracy_embed))
                         print("Test classification accuracy: " + str(test_accuracy_classify))
                         print("Test pos tagging accuracy: " + str(test_pos_accuracy))
                         print("Test ner F1 score: " + str(test_n1_fscore))
+        print("Best context embedding accuracy on the test data: " + str(best_test_embed))
+        print("Best WSD accuracy on the test data: " + str(best_test_classify))
+        print("Best POS tagging accuracy on the test data: " + str(best_test_pos))
+        print("Best F1-score on the test data: " + str(best_test_ner))
 
     print("This is the end.")

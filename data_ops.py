@@ -13,8 +13,6 @@ import xml.etree.ElementTree as ET
 from conllu import parse
 from torch.utils.data import Dataset
 
-f_sensekey2synset = "/home/lenovo/dev/neural-wsd/data/sensekey2synset.pkl"
-sensekey2synset = pickle.load(open(f_sensekey2synset, "rb"))
 CUSTOM_FIELDS = ('form', 'lemma', 'pos', 'synsets', 'entity')
 
 POS_MAP = {"NOUN": "n", "VERB": "v", "ADJ": "a", "ADV": "r"}
@@ -364,8 +362,8 @@ def transform_bsnlp2tsv(path_to_dataset, output_path, btb=False, separator="    
                         new_content += new_line
             else:
                 text = text.replace("\t0\t", "\t_\t")
-                text = text.replace("\tLat", "\tunknown\tLat")
-                text = text.replace("Unknown\t_", "unknown\tunknown\t_")
+                # text = text.replace("\tLat", "\tunknown\tLat")
+                # text = text.replace("Unknown\t_", "unknown\tunknown\t_")
                 new_content = text
         with open(os.path.join(output_path, f_name + ".tsv"), "w") as new_f:
             new_f.write(new_content.rstrip("\n"))
@@ -505,6 +503,8 @@ def get_pos_tagset(f_mapping, granularity="medium"):
     return postag2postag
 
 if __name__ == "__main__":
+    f_sensekey2synset = "/home/lenovo/dev/neural-wsd/data/sensekey2synset.pkl"
+    sensekey2synset = pickle.load(open(f_sensekey2synset, "rb"))
     # transform_uef2tsv("C:\Work\dev\wsd-resources\WSD_Unified_Evaluation_Datasets\senseval2",
     #                   "C:\Work\dev\wsd-resources\data_tsv")
     # f_dataset = "/home/lenovo/dev/neural-wsd/data/Unified-WSD-framework/tsv/semeval2007.tsv"
@@ -517,8 +517,8 @@ if __name__ == "__main__":
     #                  '/home/lenovo/dev/PostDoc/LREC/cc.bg.300.vec',
     #                  '/home/lenovo/dev/PostDoc/LREC/cc.bg.300.vec_FILTERED',
     #                  '/home/lenovo/dev/PostDoc/LREC/oov.txt')
-    transform_bsnlp2tsv("/home/lenovo/dev/PostDoc/LREC/BSLNE/TestReady-20191129",
-                        "/home/lenovo/dev/PostDoc/LREC/BSLNE/tsv_test",
-                        False,
+    transform_bsnlp2tsv("/home/lenovo/dev/PostDoc/LREC/BTB_BIOFull_WSD_021119",
+                        "/home/lenovo/dev/PostDoc/LREC/BTB_BIOFull_WSD_021119_TSV",
+                        True,
                         "\t")
     print("This is the end.")
