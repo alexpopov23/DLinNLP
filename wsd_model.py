@@ -12,7 +12,8 @@ POS_MAP = {"NOUN": "n", "VERB": "v", "ADJ": "a", "ADV": "r"}
 class WSDModel(nn.Module):
 
     def __init__(self, embeddings_dim, embedding_weights, hidden_dim, hidden_layers, dropout,
-                 output_layers=["embed_wsd"], lemma2synsets=None, synsets2id={}, pos_tags={}, entity_tags={}):
+                 output_layers=["embed_wsd"], lemma2synsets=None, synsets2id={}, pos_tags={},
+                 entity_tags={}):
         super(WSDModel, self).__init__()
         self.output_layers = output_layers
         self.hidden_layers = hidden_layers
@@ -67,7 +68,8 @@ class WSDModel(nn.Module):
             if layer == "embed_wsd":
                 outputs["embed_wsd"] = self.dropout(self.output_emb(X_wsd))
             if layer == "classify_wsd":
-                outputs["classify_wsd"] = self.dropout(self.output_classify(X_wsd))
+                if len(self.synsets2id) > 0:
+                    outputs["classify_wsd"] = self.dropout(self.output_classify(X_wsd))
                 # outputs["classify_wsd"] = pad_sequence(self.dropout(self.output_classify(X)),
                 #                                        batch_first=True,
                 #                                        padding_value=-100)
@@ -79,6 +81,14 @@ class WSDModel(nn.Module):
                 # outputs_classif = pad_sequence(outputs_classif, batch_first=True, padding_value=-100)
                 # outputs_classif = torch.stack(outputs_classif, dim=0)
                 # outputs["classify_wsd"] = outputs_classif
+                else:
+                    outputs_classif = []
+                    for i, x in enumerate(torch.unbind(X_wsd)):
+                        # lemma_pos = lemmas[i] + "-" + POS_MAP[pos[i]]
+                        output_classif = self.dropout(self.classifiers._modules[lemmas[i]](x))
+                        outputs_classif.append(output_classif)
+                    outputs_classif = pad_sequence(outputs_classif, batch_first=True, padding_value=-100)
+                    outputs["classify_wsd"] = outputs_classif
             if layer == "pos_tagger":
                 outputs["pos_tagger"] = pad_sequence(self.dropout(self.pos_tags(X)),
                                                      batch_first=True,
@@ -155,15 +165,8 @@ def calculate_accuracy_embedding(outputs, lemmas, gold_synsets, lemma2synsets, e
         total += 1
     return matches, total
 
-# def calculate_accuracy_classification(outputs, targets):
-#     choices = torch.argmax(outputs, dim=1)
-#     comparison_tensor = torch.eq(choices, targets)
-#     matches = torch.sum(comparison_tensor).numpy()
-#     total = comparison_tensor.shape[0]
-#     return matches, total
-
-def calculate_accuracy_classification(outputs, targets, default_disambiguations, lemmas=None, known_lemmas=None, synsets=None,
-                                      lemma2synsets=None, synset2id=None, single_softmax=False):
+def calculate_accuracy_classification_wsd(outputs, targets, default_disambiguations, lemmas=None, known_lemmas=None,
+                                          synsets=None, lemma2synsets=None, synset2id=None, single_softmax=False):
     matches, total = 0, 0
     if single_softmax is False:
         choices = numpy.argmax(outputs, axis=1)
@@ -193,7 +196,7 @@ def calculate_accuracy_classification(outputs, targets, default_disambiguations,
         total += 1
     return matches, total
 
-def calculate_accuracy_pos(outputs, targets):
+def calculate_accuracy_classification(outputs, targets):
     choices = torch.argmax(outputs, dim=1)
     comparison_tensor = torch.eq(choices, targets)
     matches = torch.sum(comparison_tensor).numpy()

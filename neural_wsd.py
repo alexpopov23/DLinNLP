@@ -11,7 +11,8 @@ from torch.utils.data.sampler import SubsetRandomSampler
 
 from auxiliary import Logger
 from data_ops import WSDataset, load_embeddings, get_wordnet_lexicon
-from wsd_model import WSDModel, calculate_accuracy_embedding, calculate_accuracy_classification, calculate_accuracy_pos, calculate_accuracy_crf, calculate_f1_ner
+from wsd_model import WSDModel, calculate_accuracy_embedding, calculate_accuracy_classification, \
+    calculate_accuracy_classification_wsd, calculate_accuracy_crf, calculate_f1_ner
 
 def disambiguate_by_default(lemmas, known_lemmas):
     default_disambiguations = []
@@ -78,18 +79,17 @@ def eval_loop(data_loader, known_lemmas, model, output_layers):
             total_embed_all += total_embed
             accuracy_embed = matches_embed_all * 1.0 / total_embed_all
         if "classify_wsd" in output_layers:
-            if crf_layer is True:
-                targets_classify = torch.masked_select(eval_data["targets_classify"], eval_data["mask"])
-                matches_classify, total_classify = calculate_accuracy_classification(
-                    outputs["classify_wsd"].detach().numpy(),
-                    targets_classify.detach().numpy(),
-                    default_disambiguations,
-                    lemmas,
-                    known_lemmas,
-                    synsets,
-                    lemma2synsets,
-                    synset2id,
-                    single_softmax)
+            targets_classify = torch.masked_select(eval_data["targets_classify"], eval_data["mask"])
+            matches_classify, total_classify = calculate_accuracy_classification_wsd(
+                outputs["classify_wsd"].detach().numpy(),
+                targets_classify.detach().numpy(),
+                default_disambiguations,
+                lemmas,
+                known_lemmas,
+                synsets,
+                lemma2synsets,
+                synset2id,
+                single_softmax)
             matches_classify_all += matches_classify
             total_classify_all += total_classify
             accuracy_classify = matches_classify_all * 1.0 / total_classify_all
@@ -106,7 +106,7 @@ def eval_loop(data_loader, known_lemmas, model, output_layers):
                 mask_pos = eval_data["pos_mask"][:, :outputs["pos_tagger"].shape[1]]
                 mask_pos = torch.reshape(mask_pos, (mask_pos.shape[0], mask_pos.shape[1], 1))
                 outputs_pos = torch.masked_select(outputs["pos_tagger"], mask_pos).view(-1, len(trainset.known_pos))
-                matches_pos, total_pos = calculate_accuracy_pos(outputs_pos, targets_pos)
+                matches_pos, total_pos = calculate_accuracy_classification(outputs_pos, targets_pos)
             accuracy_pos = matches_pos * 1.0 / total_pos
         if "ner" in output_layers:
             outputs_ner = outputs["ner"]
@@ -206,6 +206,7 @@ if __name__ == "__main__":
     #     single_softmax = True
     # else:
     single_softmax = True if args.n_classifiers == "single" else False
+    pos_filter = True if args.pos_filter == "True" else False
 
     # Get model parameters
     output_layers = [str.strip(layer) for layer in args.output_layers.split(",")]
@@ -228,7 +229,7 @@ if __name__ == "__main__":
     if dev_path is None and test_path is None:
         split_dataset = True
     trainset = WSDataset(train_path, src2id, embeddings, embedding_dim, embeddings_input, max_labels, lemma2synsets,
-                         single_softmax, pos_map=f_pos_map)
+                         single_softmax, pos_map=f_pos_map, pos_filter=pos_filter)
     if single_softmax is True:
         synset2id = trainset.known_synsets
     else:
@@ -238,9 +239,9 @@ if __name__ == "__main__":
     trainsampler, devsampler, testsampler = None, None, None
     if split_dataset is False:
         devset = WSDataset(dev_path, src2id, embeddings, embedding_dim, embeddings_input, max_labels, lemma2synsets,
-                           single_softmax, synset2id)
+                           single_softmax, synset2id, pos_filter=pos_filter)
         testset = WSDataset(test_path, src2id, embeddings, embedding_dim, embeddings_input, max_labels, lemma2synsets,
-                            single_softmax, synset2id)
+                            single_softmax, synset2id, pos_filter=pos_filter)
         trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True)
         devloader = torch.utils.data.DataLoader(devset, batch_size=len(devset.data), shuffle=False)
         testloader = torch.utils.data.DataLoader(testset, batch_size=len(testset.data), shuffle=False)
@@ -391,7 +392,7 @@ if __name__ == "__main__":
                         print("Average embedding loss (training): " + str(average_loss_embed.detach().numpy()))
                         average_loss_overall += average_loss_embed.detach().numpy()
                     if "classify_wsd" in output_layers:
-                        matches_classify, total_classify = calculate_accuracy_classification(
+                        matches_classify, total_classify = calculate_accuracy_classification_wsd(
                                 outputs["classify_wsd"].detach().numpy(),
                                 targets_classify.detach().numpy(),
                                 default_disambiguations,
@@ -414,7 +415,7 @@ if __name__ == "__main__":
                                                                             mask_crf_pos,
                                                                             targets_pos)
                         else:
-                            matches_pos, total_pos = calculate_accuracy_pos(
+                            matches_pos, total_pos = calculate_accuracy_classification(
                                 outputs_pos,
                                 targets_pos)
                         train_accuracy_pos = matches_pos * 1.0 / total_pos
@@ -431,7 +432,7 @@ if __name__ == "__main__":
                                                                             targets_ner)
                             outputs_ner = loss_func_ner.decode(outputs["ner"], mask=mask_crf_ner)
                         else:
-                            matches_ner, total_ner = calculate_accuracy_pos(outputs_ner, targets_ner)
+                            matches_ner, total_ner = calculate_accuracy_classification(outputs_ner, targets_ner)
                             outputs_ner = torch.argmax(outputs_ner, dim=1)
                             outputs_ner = slice_and_pad(outputs_ner, data["length"])
                             targets_ner = slice_and_pad(targets_ner, data["length"])

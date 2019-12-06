@@ -33,7 +33,7 @@ class Sample():
 class WSDataset(Dataset):
 
     def __init__(self, tsv_data, src2id, embeddings, embeddings_dim, embeddings_input, max_labels, lemma2synsets,
-                 single_softmax, known_synsets=None, pos_map=None):
+                 single_softmax, known_synsets=None, pos_map=None, pos_filter=False):
         # Our data has some pretty long sentences, so we will set a large max length
         # Alternatively, can throw them out or truncate them
         self.src2id = src2id
@@ -42,6 +42,7 @@ class WSDataset(Dataset):
         self.embeddings_input = embeddings_input
         self.max_labels = max_labels
         self.lemma2synsets = lemma2synsets
+        self.pos_filter = pos_filter
         self.known_lemmas, self.known_pos, self.known_entity_tags = set(), set(), set()
         if pos_map is not None:
             pos_map = get_pos_tagset(pos_map, "medium")
@@ -81,6 +82,7 @@ class WSDataset(Dataset):
         for i, label in enumerate(sample.synsets):
             lemma = sample.lemmas[i]
             lemma_pos = sample.lemmas_pos[i]
+            dict_key = lemma_pos if self.pos_filter is True else lemma
             pos = sample.pos[i]
             entity = sample.entities[i]
             target_embed, neg_target, target_classify = \
@@ -104,7 +106,7 @@ class WSDataset(Dataset):
                 pos_mask.append(True)
                 ner_mask.append(True)
                 # lemma_pos = sample.lemmas[i] + "-" + sample.pos[i] # e.g. "bear-n"
-                all_synsets = self.lemma2synsets[lemma] # TODO: parametrize this
+                all_synsets = self.lemma2synsets[dict_key] # TODO: parametrize this
                 # Take care of cases of multiple labels, e.g. "01104026-a,00357790-a"
                 these_synsets = label.split(",")
                 num_labels = len(these_synsets)
@@ -122,7 +124,7 @@ class WSDataset(Dataset):
                     else:
                         targets_classify.append(self.known_synsets["UNKNOWN"])
                 else:
-                    targets_classify.append(self.lemma2synsets[lemma_pos].index(random.choice(these_synsets)))
+                    targets_classify.append(self.lemma2synsets[dict_key].index(random.choice(these_synsets)))
                 lengths_labels += 1
                 # Pick negative targets too
                 # Copy the list of synsets, so that we don't change the dict
@@ -186,7 +188,7 @@ class WSDataset(Dataset):
                         if pos in pos_map:
                             pos = pos_map[pos]
                     # pos = POS_MAP[pos] if pos in POS_MAP else pos
-                    lemma_pos = lemma + "-" + POS_MAP[pos] if pos in POS_MAP else pos
+                    lemma_pos = lemma + "-" + POS_MAP[pos] if pos in POS_MAP else lemma # TODO: handle different POS tags
                     synsets = token["synsets"]
                     entity = token['entity']
                     sample.lemmas.append(lemma)
