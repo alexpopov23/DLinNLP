@@ -12,11 +12,13 @@ POS_MAP = {"NOUN": "n", "VERB": "v", "ADJ": "a", "ADV": "r"}
 class WSDModel(nn.Module):
 
     def __init__(self, embeddings_dim, embedding_weights, hidden_dim, hidden_layers, dropout,
-                 output_layers=["embed_wsd"], lemma2synsets=None, synsets2id={}, pos_tags={}):
+                 output_layers=["embed_wsd"], lemma2synsets=None, synsets2id={}, pos_tags={},
+                 entity_tags={}):
         super(WSDModel, self).__init__()
         self.output_layers = output_layers
         self.hidden_layers = hidden_layers
         self.hidden_dim = hidden_dim
+        self.num_wsd_classes = 0
         self.synsets2id = synsets2id
         self.word_embeddings = nn.Embedding.from_pretrained(embedding_weights,
                                                             freeze=True)
@@ -32,16 +34,72 @@ class WSDModel(nn.Module):
         if "classify_wsd" in self.output_layers:
             if len(self.synsets2id) > 0:
                 self.output_classify = nn.Linear(2*hidden_dim, len(self.synsets2id))
+                self.num_wsd_classes = len(self.synsets2id)
             else:
                 lemma2layers = collections.OrderedDict()
                 for lemma, synsets in lemma2synsets.items():
                     lemma2layers[lemma] = nn.Linear(2*hidden_dim, len(synsets))
+                    if len(synsets) > self.num_wsd_classes:
+                        self.num_wsd_classes = len(synsets)
                 self.classifiers = nn.Sequential(lemma2layers)
         if "pos_tagger" in self.output_layers:
             self.pos_tags = nn.Linear(2 * hidden_dim, len(pos_tags))
+        if "ner" in self.output_layers:
+            self.ner = nn.Linear(2 * hidden_dim, len(entity_tags))
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, X, X_lengths, mask, pos_mask, lemmas):
+        X = self.word_embeddings(X) # shape is [batch_size,max_length,embeddings_dim]
+        X = self.dropout(X)
+        X = torch.nn.utils.rnn.pack_padded_sequence(X,
+                                                    X_lengths,
+                                                    batch_first=True,
+                                                    enforce_sorted=False)
+        X, _ = self.lstm(X)
+        # pad_packed_sequence cuts the sequences in the batch to the greatest sequence length
+        X, _ = torch.nn.utils.rnn.pad_packed_sequence(X, batch_first=True) # shape is [batch_size, max_length_of_X, 2* hidden_layer]
+        # Therefore, make sure mask has the same shape as X
+        mask = mask[:, :X.shape[1]] # shape is [batch_size, max_length_of_X]
+        mask = torch.reshape(mask, (mask.shape[0], mask.shape[1], 1))
+        X_wsd = torch.masked_select(X, mask)
+        X_wsd = X_wsd.view(-1, 2 * self.hidden_dim)  # shape is [num_labels, 2*hidden_dim]
+        outputs = {}
+        for layer in self.output_layers:
+            if layer == "embed_wsd":
+                outputs["embed_wsd"] = self.dropout(self.output_emb(X_wsd))
+            if layer == "classify_wsd":
+                if len(self.synsets2id) > 0:
+                    outputs["classify_wsd"] = self.dropout(self.output_classify(X_wsd))
+                # outputs["classify_wsd"] = pad_sequence(self.dropout(self.output_classify(X)),
+                #                                        batch_first=True,
+                #                                        padding_value=-100)
+                # outputs_classif = []
+                # for i, x in enumerate(torch.unbind(X_wsd)):
+                #     # lemma_pos = lemmas[i] + "-" + POS_MAP[pos[i]]
+                #     output_classif = self.dropout(self.classifiers._modules[lemmas[i]](x))
+                #     outputs_classif.extend(torch.cat((output_classif, torch.zeros(self.num_wsd_classes - len(output_classif))), 0))
+                # outputs_classif = pad_sequence(outputs_classif, batch_first=True, padding_value=-100)
+                # outputs_classif = torch.stack(outputs_classif, dim=0)
+                # outputs["classify_wsd"] = outputs_classif
+                else:
+                    outputs_classif = []
+                    for i, x in enumerate(torch.unbind(X_wsd)):
+                        # lemma_pos = lemmas[i] + "-" + POS_MAP[pos[i]]
+                        output_classif = self.dropout(self.classifiers._modules[lemmas[i]](x))
+                        outputs_classif.append(output_classif)
+                    outputs_classif = pad_sequence(outputs_classif, batch_first=True, padding_value=-100)
+                    outputs["classify_wsd"] = outputs_classif
+            if layer == "pos_tagger":
+                outputs["pos_tagger"] = pad_sequence(self.dropout(self.pos_tags(X)),
+                                                     batch_first=True,
+                                                     padding_value=-100)
+            if layer == "ner":
+                outputs["ner"] = pad_sequence(self.ner(X),
+                                              batch_first=True,
+                                              padding_value=-100)
+        return outputs
+
+    def forward_old(self, X, X_lengths, mask, pos_mask, lemmas):
         X = self.word_embeddings(X) # shape is [batch_size,max_length,embeddings_dim]
         X = torch.nn.utils.rnn.pack_padded_sequence(X,
                                                     X_lengths,
@@ -95,8 +153,10 @@ def calculate_accuracy_embedding(outputs, lemmas, gold_synsets, lemma2synsets, e
         synset_choice, max_similarity = "", -100.0
         for synset in possible_synsets:
             synset_embedding = embeddings[src2id[synset]] if synset in src2id else embeddings[src2id["<UNK>"]]
-            cos_sim = cosine_similarity(output.view(1, -1).detach().numpy(),
-                                        synset_embedding.view(1, -1).detach().numpy())[0][0]
+            cos_sim = torch.nn.CosineSimilarity(output.view(1, -1).detach().numpy(),
+                                                synset_embedding.view(1, -1).detach().numpy())[0][0]
+            # cos_sim = cosine_similarity(output.view(1, -1).detach().numpy(),
+            #                             synset_embedding.view(1, -1).detach().numpy())[0][0]
             if cos_sim > max_similarity:
                 max_similarity = cos_sim
                 synset_choice = synset
@@ -105,15 +165,8 @@ def calculate_accuracy_embedding(outputs, lemmas, gold_synsets, lemma2synsets, e
         total += 1
     return matches, total
 
-# def calculate_accuracy_classification(outputs, targets):
-#     choices = torch.argmax(outputs, dim=1)
-#     comparison_tensor = torch.eq(choices, targets)
-#     matches = torch.sum(comparison_tensor).numpy()
-#     total = comparison_tensor.shape[0]
-#     return matches, total
-
-def calculate_accuracy_classification(outputs, targets, default_disambiguations, lemmas=None, known_lemmas=None, synsets=None,
-                                      lemma2synsets=None, synset2id=None, single_softmax=False):
+def calculate_accuracy_classification_wsd(outputs, targets, default_disambiguations, lemmas=None, known_lemmas=None,
+                                          synsets=None, lemma2synsets=None, synset2id=None, single_softmax=False):
     matches, total = 0, 0
     if single_softmax is False:
         choices = numpy.argmax(outputs, axis=1)
@@ -124,7 +177,7 @@ def calculate_accuracy_classification(outputs, targets, default_disambiguations,
         choices = outputs
     for i, choice in enumerate(choices):
         if single_softmax is True:
-            if targets[i] == 0:
+            if targets[i] == 0: # i.e. if the synset is not attested in the training data
                 if lemma2synsets[lemmas[i]][0] in synsets[i].split(","):
                     matches += 1
             else:
@@ -143,9 +196,106 @@ def calculate_accuracy_classification(outputs, targets, default_disambiguations,
         total += 1
     return matches, total
 
-def calculate_accuracy_pos(outputs, targets):
+def calculate_accuracy_classification(outputs, targets):
     choices = torch.argmax(outputs, dim=1)
     comparison_tensor = torch.eq(choices, targets)
     matches = torch.sum(comparison_tensor).numpy()
     total = comparison_tensor.shape[0]
     return matches, total
+
+def calculate_accuracy_crf(loss_func, outputs, mask, targets):
+    choices = loss_func.decode(outputs, mask=mask)
+    matches, total = 0, 0
+    for i, seq in enumerate(choices):
+        for j, choice in enumerate(seq):
+            if choice == targets[i][j].item():
+                matches += 1
+            total += 1
+    return matches, total
+
+def calculate_f1_ner(outputs, targets, lengths, entity2id):
+    id2entity = {i:entity for entity, i in entity2id.items()}
+    buffer, entities, verbose = [], [], ""
+    tag_collections = [outputs, targets]
+    for collection in tag_collections:
+        tags = []
+        for i, seq in enumerate(collection):
+            if len(buffer) != 0:
+                tags.append(buffer)
+                buffer = []
+            for j, tag in enumerate(seq):
+                if j >= lengths[i]:
+                    break
+                if tag == entity2id["O"]:
+                    if len(buffer) != 0:    # if buffer not empty, then write the NE to list
+                        tags.append(buffer)
+                        buffer = []
+                else:
+                    if len(id2entity[tag].split("-")) < 2:
+                        print("Here")
+                    id1, id2 = id2entity[tag].split("-")    # get B/I and EVT/LOC/ORG/PER/PRO/etc tags
+                    if id1 == "B":
+                        if len(buffer) != 0:    # if buffer not empty, write the NE to list
+                            tags.append(buffer)
+                        buffer = [i, id2, j, j]    # initiate new entity entry in buffer
+                    elif id1 == "I":
+                        if len(buffer) == 0:    # if I-tag is an island, disregard it
+                            continue
+                        elif id2 != buffer[1]:    # if type of entity doesn't match what's in buffer, write buffer without current tag
+                            tags.append(buffer)
+                            buffer = []
+                        else:    # otherwise, add new end index to buffer
+                            buffer[3] = j
+        if len(buffer) != 0:
+            tags.append(buffer)
+        entities.append(tags)
+    # get counts on false positives, true positives and false negatives
+    tps, fps, fns = 0, 0, 0
+    entity_types = set([entity.split("-")[1] for entity in entity2id.keys() if entity != "O"])
+    verbose_info = {entity + "_" + qualifier: 0 for qualifier in ["TP", "FP", "FN"] for entity in entity_types}
+    for ent in entities[0]:
+        if ent in entities[1]:
+            tps += 1
+            verbose_info[ent[1] + "_TP"] += 1
+        else:
+            fps += 1
+            verbose_info[ent[1] + "_FP"] += 1
+    for ent in entities[1]:
+        if ent not in entities[0]:
+            fns += 1
+            verbose_info[ent[1] + "_FN"] += 1
+    _, _, f1 = get_granular_f1(tps, fps, fns)
+    macro_avg = 0.0
+    for entity in entity_types:
+        tps, fps, fns = verbose_info[entity + "_TP"], verbose_info[entity + "_FP"], verbose_info[entity + "_FN"]
+        precision, recall, f1_verbose = get_granular_f1(tps, fps, fns)
+        verbose_line = entity + "\t" + "tp: " + str(tps) + " - fp: " + str(fps) + " - fn: " + str(fns) \
+                      + " - precision: " + str(precision) + " - recall: " + str(recall) + " - f1-score: "\
+                       + str(f1_verbose) + "\n"
+        macro_avg += f1_verbose
+        verbose += verbose_line
+    macro_avg /= len(entities)
+    verbose = "MICRO_AVG:\tf1-score: " + str(f1) + "\n" + "MACRO_AVG:\tf1-score: " + str(macro_avg) + "\n" + verbose
+    return f1, verbose
+
+def get_granular_f1(tps, fps, fns):
+    if tps + fps == 0:
+        precision = 0.0
+    else:
+        precision = 1.0 * tps / (tps + fps)
+    if tps + fns == 0:
+        recall = 0.0
+    else:
+        recall = 1.0 * tps / (tps + fns)
+    if precision + recall == 0:
+        f1 = 0.0
+    else:
+        f1 = 2 * (precision * recall) / (precision + recall)
+    return precision, recall, f1
+
+if __name__ == "__main__":
+    test_seq_out = [[10, 10, 0, 5, 5, 10, 10, 2, 10, 3, 4, 9, 8, 10, 8, 1 ], [10, 10, 10]]
+    test_seq_gold = [[10, 10, 1, 6, 6, 10, 10, 2, 10, 3, 4, 10, 3, 10, 10, 1], [10, 10, 2]]
+    entity2id = {'B-EVT': 0, 'B-LOC': 1, 'B-ORG': 2, 'B-PER': 3, 'B-PRO': 4, 'I-EVT': 5,
+                 'I-LOC': 6, 'I-ORG': 7, 'I-PER': 8, 'I-PRO': 9, 'O': 10}
+    print(calculate_f1_ner(test_seq_out, test_seq_gold, entity2id))
