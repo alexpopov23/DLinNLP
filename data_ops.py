@@ -29,6 +29,7 @@ class Sample():
         self.lemmas_pos = []
         self.synsets = []
         self.entities = []
+        self.sentence_str = ""
 
 class WSDataset(Dataset):
 
@@ -159,6 +160,7 @@ class WSDataset(Dataset):
                 "inputs": torch.tensor(inputs, dtype=torch.long),
                 "targets_embed": torch.stack(targets_embed).clone().detach(),
                 "neg_targets": torch.stack(neg_targets).clone().detach(),
+                "sentence": sample.sentence_str,
                 "targets_classify": torch.tensor(targets_classify, dtype=torch.long),
                 "targets_pos": torch.tensor(targets_pos, dtype=torch.long),
                 "targets_ner": torch.tensor(targets_ner, dtype=torch.long),
@@ -178,6 +180,7 @@ class WSDataset(Dataset):
             sentences = parse(open(f, "r").read(), CUSTOM_FIELDS)
             for sentence in sentences:
                 sample = Sample()
+                sentence_str = []
                 for token in sentence:
                     sample.forms.append(token["form"])
                     lemma = token["lemma"]
@@ -206,6 +209,8 @@ class WSDataset(Dataset):
                     self.known_lemmas.add(lemma)
                     self.known_pos.add(pos)
                     self.known_entity_tags.add(entity)
+                    sentence_str.append(token["form"])
+                sample.sentence_str = (" ").join(sentence_str)
                 sample.length = len(sample.forms) if len(sample.forms) < max_length else max_length
                 # Take care to pad all sequences to the same length
                 sample.forms = (sample.forms + (max_length - len(sample.forms)) * ["<PAD>"])[:max_length]
@@ -391,7 +396,7 @@ def fix_semcor_xml(path_to_dataset, output_path):
             new_f.write(new_content)
     return
 
-def load_embeddings(embeddings_path):
+def load_embeddings(embeddings_path, use_flair=False):
     """Loads an embedding model with gensim
 
     Args:
@@ -403,6 +408,10 @@ def load_embeddings(embeddings_path):
         id2src: A dictionary, maps integers in the list to strings
 
     """
+    # if use_flair is True:
+    #     binary = True
+    # else:
+    #     binary = False
     model = gensim.models.KeyedVectors.load_word2vec_format(embeddings_path,
                                                             binary=False,
                                                             datatype=numpy.float32)

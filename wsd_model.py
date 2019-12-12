@@ -4,7 +4,8 @@ import numpy
 import torch
 import torch.nn as nn
 
-from sklearn.metrics.pairwise import cosine_similarity
+from flair.data import Sentence
+from flair.embeddings import BytePairEmbeddings, CharacterEmbeddings, FastTextEmbeddings, FlairEmbeddings, StackedEmbeddings, WordEmbeddings
 from torch.nn.utils.rnn import pad_sequence
 
 POS_MAP = {"NOUN": "n", "VERB": "v", "ADJ": "a", "ADV": "r"}
@@ -13,15 +14,29 @@ class WSDModel(nn.Module):
 
     def __init__(self, embeddings_dim, embedding_weights, hidden_dim, hidden_layers, dropout,
                  output_layers=["embed_wsd"], lemma2synsets=None, synsets2id={}, pos_tags={},
-                 entity_tags={}):
+                 entity_tags={}, use_flair=False, embeddings_path=None):
         super(WSDModel, self).__init__()
+        self.use_flair = use_flair
         self.output_layers = output_layers
         self.hidden_layers = hidden_layers
         self.hidden_dim = hidden_dim
         self.num_wsd_classes = 0
         self.synsets2id = synsets2id
-        self.word_embeddings = nn.Embedding.from_pretrained(embedding_weights,
-                                                            freeze=True)
+        if use_flair is True:
+            self.word_embeddings = StackedEmbeddings([
+                WordEmbeddings('/home/lenovo/dev/PostDoc/LREC/Embeddings/cc.bg.300.vec_FILTERED_OOV.gensim'),
+                # WordEmbeddings('bg'),
+                # FastTextEmbeddings('/home/lenovo/dev/PostDoc/LREC/Embeddings/cc.bg.300.vec_FILTERED_OOV'),
+                # Byte pair embeddings for English
+                BytePairEmbeddings('bg'),
+                FlairEmbeddings('bg-forward-fast'),
+                FlairEmbeddings('bg-backward-fast'),
+                CharacterEmbeddings()
+            ])
+            embeddings_dim = self.word_embeddings.embedding_length
+        else:
+            self.word_embeddings = nn.Embedding.from_pretrained(embedding_weights,
+                                                                freeze=True)
         self.lstm = nn.LSTM(embeddings_dim,
                             hidden_dim,
                             hidden_layers,
@@ -48,8 +63,18 @@ class WSDModel(nn.Module):
             self.ner = nn.Linear(2 * hidden_dim, len(entity_tags))
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, X, X_lengths, mask, pos_mask, lemmas):
-        X = self.word_embeddings(X) # shape is [batch_size,max_length,embeddings_dim]
+    def forward(self, data, lemmas):
+        if self.use_flair is True:
+            X = data["sentence"]
+            X = [Sentence(sent) for sent in X]
+            self.word_embeddings.embed(X)
+            X = [torch.stack([token.embedding for token in sentence]) for sentence in X]
+            # pad_vector = torch.zeros(self.word_embeddings.embedding_length)
+            X = pad_sequence(X, batch_first=True, padding_value=0.0)
+        else:
+            X = data["inputs"]
+            X = self.word_embeddings(X)  # shape is [batch_size,max_length,embeddings_dim]
+        X_lengths, mask, lemmas = data["length"], data["mask"], lemmas
         X = self.dropout(X)
         X = torch.nn.utils.rnn.pack_padded_sequence(X,
                                                     X_lengths,
@@ -70,17 +95,6 @@ class WSDModel(nn.Module):
             if layer == "classify_wsd":
                 if len(self.synsets2id) > 0:
                     outputs["classify_wsd"] = self.dropout(self.output_classify(X_wsd))
-                # outputs["classify_wsd"] = pad_sequence(self.dropout(self.output_classify(X)),
-                #                                        batch_first=True,
-                #                                        padding_value=-100)
-                # outputs_classif = []
-                # for i, x in enumerate(torch.unbind(X_wsd)):
-                #     # lemma_pos = lemmas[i] + "-" + POS_MAP[pos[i]]
-                #     output_classif = self.dropout(self.classifiers._modules[lemmas[i]](x))
-                #     outputs_classif.extend(torch.cat((output_classif, torch.zeros(self.num_wsd_classes - len(output_classif))), 0))
-                # outputs_classif = pad_sequence(outputs_classif, batch_first=True, padding_value=-100)
-                # outputs_classif = torch.stack(outputs_classif, dim=0)
-                # outputs["classify_wsd"] = outputs_classif
                 else:
                     outputs_classif = []
                     for i, x in enumerate(torch.unbind(X_wsd)):
@@ -276,7 +290,7 @@ def calculate_f1_ner(outputs, targets, lengths, entity2id):
         verbose += verbose_line
     macro_avg /= len(entities)
     verbose = "MICRO_AVG:\tf1-score: " + str(f1) + "\n" + "MACRO_AVG:\tf1-score: " + str(macro_avg) + "\n" + verbose
-    return f1, verbose
+    return f1, [tps, fps, fns], verbose
 
 def get_granular_f1(tps, fps, fns):
     if tps + fps == 0:

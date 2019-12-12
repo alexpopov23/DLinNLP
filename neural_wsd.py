@@ -12,7 +12,7 @@ from torch.utils.data.sampler import SubsetRandomSampler
 from auxiliary import Logger
 from data_ops import WSDataset, load_embeddings, get_wordnet_lexicon
 from wsd_model import WSDModel, calculate_accuracy_embedding, calculate_accuracy_classification, \
-    calculate_accuracy_classification_wsd, calculate_accuracy_crf, calculate_f1_ner
+    calculate_accuracy_classification_wsd, calculate_accuracy_crf, calculate_f1_ner, get_granular_f1
 
 def disambiguate_by_default(lemmas, known_lemmas):
     default_disambiguations = []
@@ -57,6 +57,9 @@ def length_to_mask(lengths, max_len=None, dtype=None):
 def eval_loop(data_loader, known_lemmas, model, output_layers):
     matches_embed_all, total_embed_all = 0, 0
     matches_classify_all, total_classify_all = 0, 0
+    matches_pos_all, total_pos_all = 0, 0
+    tps_all, fps_all, fns_all = 0, 0, 0
+    accuracy_embed, accuracy_classify, accuracy_pos, f1_ner = 0.0, 0.0, 0.0, 0.0
     for eval_data in data_loader:
         # lemmas = numpy.asarray(eval_data['lemmas_pos']).transpose()[eval_data["mask"]]
         lemmas = numpy.asarray(eval_data['lemmas']).transpose()[eval_data["mask"]] # TODO: parametrize
@@ -65,8 +68,8 @@ def eval_loop(data_loader, known_lemmas, model, output_layers):
         # pos = numpy.asarray(eval_data['pos']).transpose()[eval_data["mask"]]
         # targets_classify = torch.from_numpy(numpy.asarray(eval_data["targets_classify"])[eval_data["mask"]])
         # targets_pos = torch.from_numpy(numpy.asarray(eval_data["targets_pos"])[eval_data["pos_mask"]])
-        outputs = model(eval_data["inputs"], eval_data["length"], eval_data["mask"], eval_data["pos_mask"], lemmas)
-        accuracy_embed, accuracy_classify, accuracy_pos, f1_ner = 0.0, 0.0, 0.0, 0.0
+        # outputs = model(eval_data["inputs"], eval_data["length"], eval_data["mask"], eval_data["pos_mask"], lemmas)
+        outputs = model(eval_data, lemmas)
         if "embed_wsd" in output_layers:
             matches_embed, total_embed = calculate_accuracy_embedding(outputs["embed_wsd"],
                                                                       lemmas,
@@ -77,7 +80,6 @@ def eval_loop(data_loader, known_lemmas, model, output_layers):
                                                                       pos_filter=True)
             matches_embed_all += matches_embed
             total_embed_all += total_embed
-            accuracy_embed = matches_embed_all * 1.0 / total_embed_all
         if "classify_wsd" in output_layers:
             targets_classify = torch.masked_select(eval_data["targets_classify"], eval_data["mask"])
             matches_classify, total_classify = calculate_accuracy_classification_wsd(
@@ -92,7 +94,6 @@ def eval_loop(data_loader, known_lemmas, model, output_layers):
                 single_softmax)
             matches_classify_all += matches_classify
             total_classify_all += total_classify
-            accuracy_classify = matches_classify_all * 1.0 / total_classify_all
         if "pos_tagger" in output_layers:
             if crf_layer is True:
                 targets_pos = eval_data["targets_pos"][:, :outputs["pos_tagger"].shape[1]]
@@ -107,7 +108,9 @@ def eval_loop(data_loader, known_lemmas, model, output_layers):
                 mask_pos = torch.reshape(mask_pos, (mask_pos.shape[0], mask_pos.shape[1], 1))
                 outputs_pos = torch.masked_select(outputs["pos_tagger"], mask_pos).view(-1, len(trainset.known_pos))
                 matches_pos, total_pos = calculate_accuracy_classification(outputs_pos, targets_pos)
-            accuracy_pos = matches_pos * 1.0 / total_pos
+            matches_pos_all += matches_pos
+            total_pos_all += total_pos
+
         if "ner" in output_layers:
             outputs_ner = outputs["ner"]
             if crf_layer is True:
@@ -120,10 +123,17 @@ def eval_loop(data_loader, known_lemmas, model, output_layers):
                 outputs_ner = torch.argmax(outputs_ner, dim=2)
                 targets_ner = slice_and_pad(targets_ner, eval_data["length"])
                 outputs_ner = outputs_ner.numpy()
-            f1_ner, _ = calculate_f1_ner(outputs_ner,
-                                         targets_ner.numpy(),
-                                         eval_data["length"],
+            f1_ner, [tps, fps, fns], _ = calculate_f1_ner(outputs_ner,
+                                                          targets_ner.numpy(),
+                                                          eval_data["length"],
                                          trainset.known_entity_tags)
+            tps_all += tps
+            fps_all += fps
+            fns_all += fns
+        accuracy_embed = matches_embed_all * 1.0 / total_embed_all if total_embed_all > 0 else 0
+        accuracy_classify = matches_classify_all * 1.0 / total_classify_all if total_classify_all > 0 else 0
+        accuracy_pos = matches_pos_all * 1.0 / total_pos_all if total_pos_all > 0 else 0
+        _, _, f1_ner = get_granular_f1(tps_all, fps_all, fns_all)
     return accuracy_embed, accuracy_classify, accuracy_pos, f1_ner
 
 if __name__ == "__main__":
@@ -188,10 +198,13 @@ if __name__ == "__main__":
                         help='The path to the gold corpus used for training.')
     parser.add_argument('-training_epochs', dest='training_epochs', required=False, default=100001,
                         help='How many epochs over the data the network should train for.')
+    parser.add_argument('-use_flair', dest='use_flair', required=False, default="False",
+                        help='Whether the Flair library should be used to embed the inputs.')
 
     # Get the embeddings and lexicon
     args = parser.parse_args()
     embeddings_path = args.embeddings_path
+    use_flair = True if args.use_flair == "True" else False
     embeddings, src2id, id2src = load_embeddings(embeddings_path)
     embeddings = torch.Tensor(embeddings)
     embedding_dim = embeddings.shape[1]
@@ -243,8 +256,8 @@ if __name__ == "__main__":
         testset = WSDataset(test_path, src2id, embeddings, embedding_dim, embeddings_input, max_labels, lemma2synsets,
                             single_softmax, synset2id, pos_filter=pos_filter)
         trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True)
-        devloader = torch.utils.data.DataLoader(devset, batch_size=len(devset.data), shuffle=False)
-        testloader = torch.utils.data.DataLoader(testset, batch_size=len(testset.data), shuffle=False)
+        devloader = torch.utils.data.DataLoader(devset, batch_size=batch_size, shuffle=False)
+        testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size, shuffle=False)
     else:
         if os.path.exists(f_indices):
             with open(f_indices, "rb") as f:
@@ -267,8 +280,8 @@ if __name__ == "__main__":
         devsampler = SubsetRandomSampler(dev_indices)
         testsampler = SubsetRandomSampler(test_indices)
         trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, sampler=trainsampler)
-        devloader = torch.utils.data.DataLoader(trainset, batch_size=len(dev_indices), sampler=devsampler)
-        testloader = torch.utils.data.DataLoader(trainset, batch_size=len(test_indices), sampler=testsampler)
+        devloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, sampler=devsampler)
+        testloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, sampler=testsampler)
 
     # Construct data loaders for this specific model
 
@@ -278,7 +291,7 @@ if __name__ == "__main__":
 
     # Construct the model
     model = WSDModel(embedding_dim, embeddings, hidden_neurons, hidden_layers, dropout, output_layers, lemma2synsets,
-                     synset2id, trainset.known_pos, trainset.known_entity_tags)
+                     synset2id, trainset.known_pos, trainset.known_entity_tags, use_flair=use_flair, embeddings_path=embeddings_path)
     loss_func_embed = torch.nn.MSELoss()
     if crf_layer is True:
         if "classify_wsd" in output_layers:
@@ -322,7 +335,8 @@ if __name__ == "__main__":
                 default_disambiguations = disambiguate_by_default(lemmas, trainset.known_lemmas)
                 synsets = numpy.asarray(data['synsets']).transpose()[data["mask"]]
                 # lengths_labels = numpy.asarray(data["lengths_labels"])[data["mask"]]
-                outputs = model(data["inputs"], data["length"], data["mask"], data["pos_mask"], lemmas)
+                # outputs = model(data["inputs"], data["length"], data["mask"], data["pos_mask"], lemmas)
+                outputs = model(data, lemmas)
                 loss = 0.0
                 # Calculate loss for the context embedding method
                 if "embed_wsd" in output_layers:
@@ -437,10 +451,10 @@ if __name__ == "__main__":
                             outputs_ner = slice_and_pad(outputs_ner, data["length"])
                             targets_ner = slice_and_pad(targets_ner, data["length"])
                             outputs_ner = outputs_ner.numpy()
-                        f1_ner, _ = calculate_f1_ner(outputs_ner,
-                                                     targets_ner.numpy(),
-                                                     data["length"],
-                                                     trainset.known_entity_tags)
+                        f1_ner, _, _ = calculate_f1_ner(outputs_ner,
+                                                        targets_ner.numpy(),
+                                                        data["length"],
+                                                        trainset.known_entity_tags)
                         train_accuracy_ner = matches_ner * 1.0 / total_ner
 
                         print("Training ner tagger accuracy: " + str(train_accuracy_ner))
