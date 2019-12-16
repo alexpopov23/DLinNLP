@@ -47,7 +47,7 @@ class WSDataset(Dataset):
         self.known_lemmas, self.known_pos, self.known_entity_tags = set(), set(), set()
         if pos_map is not None:
             pos_map = get_pos_tagset(pos_map, "medium")
-        self.data = self.parse_tsv(tsv_data, 300, pos_map)
+        self.data = self.parse_tsv(tsv_data, 300, pos_map, pos_filter)
         self.known_lemmas, self.known_pos, self.known_entity_tags = \
             sorted(self.known_lemmas), sorted(self.known_pos), sorted(self.known_entity_tags)
         self.single_softmax = single_softmax
@@ -169,7 +169,7 @@ class WSDataset(Dataset):
                 "ner_mask": torch.tensor(ner_mask, dtype=torch.bool)}
         return data
 
-    def parse_tsv(self, dataset_path, max_length, pos_map=None):
+    def parse_tsv(self, dataset_path, max_length, pos_map=None, pos_filter=False):
         files = []
         if os.path.isfile(dataset_path):
             files = [dataset_path]
@@ -205,8 +205,10 @@ class WSDataset(Dataset):
                         else:
                             if synsets not in self.lemma2synsets[lemma]:
                                 self.lemma2synsets[lemma].append(synsets)
-                    # self.known_lemmas.add(lemma_pos) TODO: parametrize this
-                    self.known_lemmas.add(lemma)
+                    if pos_filter is True:
+                        self.known_lemmas.add(lemma_pos)
+                    else:
+                        self.known_lemmas.add(lemma)
                     self.known_pos.add(pos)
                     self.known_entity_tags.add(entity)
                     sentence_str.append(token["form"])
@@ -251,56 +253,56 @@ def transform_uef2tsv(path_to_dataset, output_path):
                         synsets = [sensekey2synset[key] for key in codes2keys[element.get("id")]]
                     else:
                         synsets = ["_"]
-                    this_sent += "\t".join([wordform, lemma, pos, ",".join(synsets)]) + "\n"
+                    this_sent += "\t".join([wordform, lemma, pos, ",".join(synsets), "_"]) + "\n"
                 sentence_str.append(this_sent)
     dataset_str = "\n".join(sentence_str)
     with open(os.path.join(output_path, data.split(".")[0] + ".tsv"), "w", encoding="utf-8") as f:
         f.write(dataset_str)
     return
 
-def transform_original2tsv(path_to_dataset, output_path):
-    for f_name in os.listdir(path_to_dataset):
-        print(f_name)
-        # with open(os.path.join(path_to_dataset, f_name), "r") as f:
-        # # context = ET.parse(os.path.join(path_to_dataset, f_name)).getroot().get("context")
-        # #     it = itertools.chain('<root>', f, '</root>')
-        # #     f_contents = f.read()
-        #     # root = ET.fromstring('<root>\n' + f_contents + '\n</root>')
-        #     doc = ET.parse(f)
-        paragraphs = ET.parse(os.path.join(path_to_dataset, f_name)).getroot().findall("contextfile")[0].findall("context")[0].findall("p")
-        sentence_str = []
-        for p in paragraphs:
-            sentences = p.findall("s")
-            for sent in sentences:
-                this_sent = ""
-                wfs = sent.findall("wf") + sent.findall("punc")
-                for wf in wfs:
-                    wordform = wf.text
-                    lemma = wf.get("lemma")
-                    if lemma is None:
-                        lemma = wordform
-                    pos = wf.get("pos")
-                    if pos is None:
-                        pos = "."
-                    synsets = wf.get("lexsn")
-                    if synsets is not None:
-                        synsets = synsets.split(";")
-                        # if lemma == "rotting":
-                        #     continue
-                        # for synset in synsets:
-                        #     sense = lemma + "%" + synset
-                        #     if sense not in sensekey2synset:
-                        #         continue
-                        synsets = [sensekey2synset[lemma + "%" + synset] for synset in synsets
-                                   if lemma + "%" + synset in sensekey2synset]
-                    else:
-                        synsets = ["_"]
-                    this_sent += "\t".join([wordform, lemma, pos, ",".join(synsets)]) + "\n"
-                sentence_str.append(this_sent)
-        dataset_str = "\n".join(sentence_str)
-        with open(os.path.join(output_path, f_name + ".tsv"), "w") as f:
-            f.write(dataset_str)
-    return
+# def transform_original2tsv(path_to_dataset, output_path):
+#     for f_name in os.listdir(path_to_dataset):
+#         print(f_name)
+#         # with open(os.path.join(path_to_dataset, f_name), "r") as f:
+#         # # context = ET.parse(os.path.join(path_to_dataset, f_name)).getroot().get("context")
+#         # #     it = itertools.chain('<root>', f, '</root>')
+#         # #     f_contents = f.read()
+#         #     # root = ET.fromstring('<root>\n' + f_contents + '\n</root>')
+#         #     doc = ET.parse(f)
+#         paragraphs = ET.parse(os.path.join(path_to_dataset, f_name)).getroot().findall("contextfile")[0].findall("context")[0].findall("p")
+#         sentence_str = []
+#         for p in paragraphs:
+#             sentences = p.findall("s")
+#             for sent in sentences:
+#                 this_sent = ""
+#                 wfs = sent.findall("wf") + sent.findall("punc")
+#                 for wf in wfs:
+#                     wordform = wf.text
+#                     lemma = wf.get("lemma")
+#                     if lemma is None:
+#                         lemma = wordform
+#                     pos = wf.get("pos")
+#                     if pos is None:
+#                         pos = "."
+#                     synsets = wf.get("lexsn")
+#                     if synsets is not None:
+#                         synsets = synsets.split(";")
+#                         # if lemma == "rotting":
+#                         #     continue
+#                         # for synset in synsets:
+#                         #     sense = lemma + "%" + synset
+#                         #     if sense not in sensekey2synset:
+#                         #         continue
+#                         synsets = [sensekey2synset[lemma + "%" + synset] for synset in synsets
+#                                    if lemma + "%" + synset in sensekey2synset]
+#                     else:
+#                         synsets = ["_"]
+#                     this_sent += "\t".join([wordform, lemma, pos, ",".join(synsets)]) + "\n"
+#                 sentence_str.append(this_sent)
+#         dataset_str = "\n".join(sentence_str)
+#         with open(os.path.join(output_path, f_name + ".tsv"), "w") as f:
+#             f.write(dataset_str)
+#     return
 
 def transform_original2tsv(path_to_dataset, output_path):
     for f_name in os.listdir(path_to_dataset):
@@ -339,7 +341,7 @@ def transform_original2tsv(path_to_dataset, output_path):
                                    if lemma + "%" + synset in sensekey2synset]
                     else:
                         synsets = ["_"]
-                    this_sent += "\t".join([wordform, lemma, pos, ",".join(synsets)]) + "\n"
+                    this_sent += "\t".join([wordform, lemma, pos, ",".join(synsets), "_"]) + "\n"
                 sentence_str.append(this_sent)
         dataset_str = "\n".join(sentence_str)
         with open(os.path.join(output_path, f_name + ".tsv"), "w") as f:
@@ -516,20 +518,20 @@ def get_pos_tagset(f_mapping, granularity="medium"):
 if __name__ == "__main__":
     f_sensekey2synset = "/home/lenovo/dev/neural-wsd/data/sensekey2synset.pkl"
     sensekey2synset = pickle.load(open(f_sensekey2synset, "rb"))
-    # transform_uef2tsv("C:\Work\dev\wsd-resources\WSD_Unified_Evaluation_Datasets\senseval2",
-    #                   "C:\Work\dev\wsd-resources\data_tsv")
+    transform_uef2tsv("/home/lenovo/dev/neural-wsd/data/Unified-WSD-framework/WSD_Unified_Evaluation_Datasets/ALL",
+                      "/home/lenovo/dev/neural-wsd/data/Unified-WSD-framework/tsv2")
     # f_dataset = "/home/lenovo/dev/neural-wsd/data/Unified-WSD-framework/tsv/semeval2007.tsv"
     # sentences = parse_tsv(open(f_dataset, "r").read(), 50)
-    # transform_original2tsv("C:\Work\dev\wsd-resources\SemCor",
-    #                        "C:\Work\dev\wsd-resources\data_tsv")
+    # transform_original2tsv("/home/lenovo/dev/neural-wsd/data/Unified-WSD-framework/WSD_Training_Corpora/SemCor",
+    #                        "/home/lenovo/dev/neural-wsd/data/Unified-WSD-framework/tsv2")
     # fix_semcor_xml("/home/lenovo/dev/neural-wsd/data/semcor3.0/all", "/home/lenovo/dev/neural-wsd/data/semcor3.0/all_fixed1")
     # transform_bsnlp2tsv('/home/lenovo/dev/PostDoc/LREC/BSLNE/BSNLP_test', '/home/lenovo/dev/PostDoc/LREC/BSLNE/tsv_test')
     # fiter_embeddings('/home/lenovo/dev/PostDoc/LREC/BSLNE/tsv_all',
     #                  '/home/lenovo/dev/PostDoc/LREC/cc.bg.300.vec',
     #                  '/home/lenovo/dev/PostDoc/LREC/cc.bg.300.vec_FILTERED',
     #                  '/home/lenovo/dev/PostDoc/LREC/oov.txt')
-    transform_bsnlp2tsv("/home/lenovo/dev/PostDoc/LREC/BTB_BIOFull_WSD_021119",
-                        "/home/lenovo/dev/PostDoc/LREC/BTB_BIOFull_WSD_021119_TSV",
-                        True,
-                        "\t")
+    # transform_bsnlp2tsv("/home/lenovo/dev/PostDoc/LREC/BTB_BIOFull_WSD_021119",
+    #                     "/home/lenovo/dev/PostDoc/LREC/BTB_BIOFull_WSD_021119_TSV",
+    #                     True,
+    #                     "\t")
     print("This is the end.")

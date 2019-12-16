@@ -23,14 +23,28 @@ class WSDModel(nn.Module):
         self.num_wsd_classes = 0
         self.synsets2id = synsets2id
         if use_flair is True:
+            # BG EMBEDDINGS:
+            # self.word_embeddings = StackedEmbeddings([
+            #     WordEmbeddings('/home/lenovo/dev/PostDoc/LREC/Embeddings/cc.bg.300.vec_FILTERED_OOV.gensim'),
+            #     # WordEmbeddings('bg'),
+            #     # FastTextEmbeddings('/home/lenovo/dev/PostDoc/LREC/Embeddings/cc.bg.300.vec_FILTERED_OOV'),
+            #     # Byte pair embeddings for English
+            #     BytePairEmbeddings('bg'),
+            #     FlairEmbeddings('bg-forward-fast'),
+            #     FlairEmbeddings('bg-backward-fast'),
+            #     CharacterEmbeddings()
+            # ])
+            # EN EMBEDDINGS:
             self.word_embeddings = StackedEmbeddings([
-                WordEmbeddings('/home/lenovo/dev/PostDoc/LREC/Embeddings/cc.bg.300.vec_FILTERED_OOV.gensim'),
+                WordEmbeddings('glove'),
+                WordEmbeddings('/home/lenovo/dev/word-embeddings/lemma_sense_embeddings/'
+                               'WN30WN30glConOne-C15I7S7N5_200M_syn_and_lemma_WikipediaLemmatized_FILTERED.gensim'),
                 # WordEmbeddings('bg'),
                 # FastTextEmbeddings('/home/lenovo/dev/PostDoc/LREC/Embeddings/cc.bg.300.vec_FILTERED_OOV'),
                 # Byte pair embeddings for English
-                BytePairEmbeddings('bg'),
-                FlairEmbeddings('bg-forward-fast'),
-                FlairEmbeddings('bg-backward-fast'),
+                BytePairEmbeddings('en'),
+                FlairEmbeddings('en-forward-fast'),
+                FlairEmbeddings('en-backward-fast'),
                 CharacterEmbeddings()
             ])
             embeddings_dim = self.word_embeddings.embedding_length

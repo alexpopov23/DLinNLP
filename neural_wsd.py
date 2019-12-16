@@ -210,8 +210,9 @@ if __name__ == "__main__":
     embedding_dim = embeddings.shape[1]
     embeddings_input = args.embeddings_input
     lexicon_path = args.lexicon_path
+    pos_filter = True if args.pos_filter == "True" else False
     if lexicon_path is not None:
-        lemma2synsets, max_labels = get_wordnet_lexicon(lexicon_path, args.pos_filter)
+        lemma2synsets, max_labels = get_wordnet_lexicon(lexicon_path, pos_filter)
     else:
         lemma2synsets, max_labels = {}, 0
     crf_layer = True if args.crf_layer == "True" else False
@@ -219,7 +220,6 @@ if __name__ == "__main__":
     #     single_softmax = True
     # else:
     single_softmax = True if args.n_classifiers == "single" else False
-    pos_filter = True if args.pos_filter == "True" else False
 
     # Get model parameters
     output_layers = [str.strip(layer) for layer in args.output_layers.split(",")]
