@@ -122,7 +122,7 @@ class WSDModel(nn.Module):
                                                      batch_first=True,
                                                      padding_value=-100)
             if layer == "ner":
-                outputs["ner"] = pad_sequence(self.ner(X),
+                outputs["ner"] = pad_sequence(self.dropout(self.ner(X)),
                                               batch_first=True,
                                               padding_value=-100)
         return outputs
