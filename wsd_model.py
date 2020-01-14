@@ -12,7 +12,7 @@ POS_MAP = {"NOUN": "n", "VERB": "v", "ADJ": "a", "ADV": "r"}
 
 class WSDModel(nn.Module):
 
-    def __init__(self, embeddings_dim, embedding_weights, hidden_dim, hidden_layers, dropout,
+    def __init__(self, lang, embeddings_dim, embedding_weights, hidden_dim, hidden_layers, dropout,
                  output_layers=["embed_wsd"], lemma2synsets=None, synsets2id={}, pos_tags={},
                  entity_tags={}, use_flair=False, embeddings_path=None):
         super(WSDModel, self).__init__()
@@ -22,31 +22,37 @@ class WSDModel(nn.Module):
         self.hidden_dim = hidden_dim
         self.num_wsd_classes = 0
         self.synsets2id = synsets2id
+        output_emb_dim = embeddings_dim
         if use_flair is True:
-            # BG EMBEDDINGS:
-            # self.word_embeddings = StackedEmbeddings([
-            #     WordEmbeddings('/home/lenovo/dev/PostDoc/LREC/Embeddings/cc.bg.300.vec_FILTERED_OOV.gensim'),
-            #     # WordEmbeddings('bg'),
-            #     # FastTextEmbeddings('/home/lenovo/dev/PostDoc/LREC/Embeddings/cc.bg.300.vec_FILTERED_OOV'),
-            #     # Byte pair embeddings for English
-            #     BytePairEmbeddings('bg'),
-            #     FlairEmbeddings('bg-forward-fast'),
-            #     FlairEmbeddings('bg-backward-fast'),
-            #     CharacterEmbeddings()
-            # ])
-            # EN EMBEDDINGS:
-            self.word_embeddings = StackedEmbeddings([
-                WordEmbeddings('glove'),
-                WordEmbeddings('/home/lenovo/dev/word-embeddings/lemma_sense_embeddings/'
-                               'WN30WN30glConOne-C15I7S7N5_200M_syn_and_lemma_WikipediaLemmatized_FILTERED.gensim'),
-                # WordEmbeddings('bg'),
-                # FastTextEmbeddings('/home/lenovo/dev/PostDoc/LREC/Embeddings/cc.bg.300.vec_FILTERED_OOV'),
-                # Byte pair embeddings for English
-                BytePairEmbeddings('en'),
-                FlairEmbeddings('en-forward-fast'),
-                FlairEmbeddings('en-backward-fast'),
-                CharacterEmbeddings()
-            ])
+            if lang == "Bulgarian":
+                # BG EMBEDDINGS:
+                self.word_embeddings = StackedEmbeddings([
+                    WordEmbeddings('/home/lenovo/dev/PostDoc/LREC/Embeddings/cc.bg.300.vec_FILTERED_OOV.gensim'),
+                    # WordEmbeddings('bg'),
+                    # FastTextEmbeddings('/home/lenovo/dev/PostDoc/LREC/Embeddings/cc.bg.300.vec_FILTERED_OOV'),
+                    # Byte pair embeddings for English
+                    BytePairEmbeddings('bg'),
+                    FlairEmbeddings('bg-forward-fast'),
+                    FlairEmbeddings('bg-backward-fast'),
+                    CharacterEmbeddings()
+                ])
+            elif lang == "English":
+                # EN EMBEDDINGS:
+                self.word_embeddings = StackedEmbeddings([
+                    WordEmbeddings('/home/lenovo/dev/word-embeddings/glove.6B/glove.6B.300d_MOD.gensim'),
+                    WordEmbeddings('/home/lenovo/dev/word-embeddings/lemma_sense_embeddings/'
+                                   'WN30WN30glConOne-C15I7S7N5_200M_syn_and_lemma_WikipediaLemmatized_FILTERED.gensim'),
+                    # WordEmbeddings('bg'),
+                    # FastTextEmbeddings('/home/lenovo/dev/PostDoc/LREC/Embeddings/cc.bg.300.vec_FILTERED_OOV'),
+                    # Byte pair embeddings for English
+                    BytePairEmbeddings('en'),
+                    FlairEmbeddings('en-forward-fast'),
+                    FlairEmbeddings('en-backward-fast'),
+                    CharacterEmbeddings()
+                ])
+            else:
+                print("Unknown language!")
+                exit(1)
             embeddings_dim = self.word_embeddings.embedding_length
         else:
             self.word_embeddings = nn.Embedding.from_pretrained(embedding_weights,
@@ -59,7 +65,8 @@ class WSDModel(nn.Module):
                             dropout=dropout)
         if "embed_wsd" in self.output_layers:
             # We want output with the size of the lemma&synset embeddings
-            self.output_emb = nn.Linear(2*hidden_dim, embeddings_dim)
+            self.emb_relu = nn.ReLU()
+            self.output_emb = nn.Linear(2*hidden_dim, output_emb_dim)
         if "classify_wsd" in self.output_layers:
             if len(self.synsets2id) > 0:
                 self.output_classify = nn.Linear(2*hidden_dim, len(self.synsets2id))
@@ -105,7 +112,8 @@ class WSDModel(nn.Module):
         outputs = {}
         for layer in self.output_layers:
             if layer == "embed_wsd":
-                outputs["embed_wsd"] = self.dropout(self.output_emb(X_wsd))
+
+                outputs["embed_wsd"] = self.dropout(self.output_emb(self.emb_relu(X_wsd)))
             if layer == "classify_wsd":
                 if len(self.synsets2id) > 0:
                     outputs["classify_wsd"] = self.dropout(self.output_classify(X_wsd))
@@ -171,6 +179,7 @@ class WSDModel(nn.Module):
 
 def calculate_accuracy_embedding(outputs, lemmas, gold_synsets, lemma2synsets, embeddings, src2id, pos_filter=True):
     matches, total = 0, 0
+    cosine_similarity = torch.nn.CosineSimilarity()
     for i, output in enumerate(torch.unbind(outputs)):
         # if pos_filter:
         #     lemma = lemmas[i] + "-" + POS_MAP[pos[i]]
@@ -181,8 +190,8 @@ def calculate_accuracy_embedding(outputs, lemmas, gold_synsets, lemma2synsets, e
         synset_choice, max_similarity = "", -100.0
         for synset in possible_synsets:
             synset_embedding = embeddings[src2id[synset]] if synset in src2id else embeddings[src2id["<UNK>"]]
-            cos_sim = torch.nn.CosineSimilarity(output.view(1, -1).detach().numpy(),
-                                                synset_embedding.view(1, -1).detach().numpy())[0][0]
+            cos_sim = cosine_similarity(output.view(1, -1), synset_embedding.view(1, -1))
+            # cos_sim = torch.nn.CosineSimilarity(output.view(1, -1).detach().numpy(), synset_embedding.view(1, -1).detach().numpy())[0][0]
             # cos_sim = cosine_similarity(output.view(1, -1).detach().numpy(),
             #                             synset_embedding.view(1, -1).detach().numpy())[0][0]
             if cos_sim > max_similarity:

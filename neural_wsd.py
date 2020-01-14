@@ -167,6 +167,8 @@ if __name__ == "__main__":
                         help='File storing the indices for the train/dev/test split of the data, if reading from 1 dataset.')
     parser.add_argument('-f_pos_map', dest='f_pos_map', required=False,
                         help='File with mapping between more and less granular tagsets.')
+    parser.add_argument('-language', dest='language', required=True,
+                        help='What language is processing done in: English or Bulgarian?')
     parser.add_argument('-learning_rate', dest='learning_rate', required=False, default=0.2,
                         help='How fast the network should learn.')
     parser.add_argument('-lexicon_path', dest='lexicon_path', required=False,
@@ -201,8 +203,12 @@ if __name__ == "__main__":
     parser.add_argument('-use_flair', dest='use_flair', required=False, default="False",
                         help='Whether the Flair library should be used to embed the inputs.')
 
+    # Figure out what device to run the network on
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
     # Get the embeddings and lexicon
     args = parser.parse_args()
+    lang = args.language
     embeddings_path = args.embeddings_path
     use_flair = True if args.use_flair == "True" else False
     embeddings, src2id, id2src = load_embeddings(embeddings_path)
@@ -241,8 +247,8 @@ if __name__ == "__main__":
 
     if dev_path is None and test_path is None:
         split_dataset = True
-    trainset = WSDataset(train_path, src2id, embeddings, embedding_dim, embeddings_input, max_labels, lemma2synsets,
-                         single_softmax, pos_map=f_pos_map, pos_filter=pos_filter)
+    trainset = WSDataset(device, train_path, src2id, embeddings, embedding_dim, embeddings_input, max_labels,
+                         lemma2synsets, single_softmax, pos_map=f_pos_map, pos_filter=pos_filter)
     if single_softmax is True:
         synset2id = trainset.known_synsets
     else:
@@ -251,10 +257,10 @@ if __name__ == "__main__":
     # if there is only a single dataset for train/dev/test purposes, sample from it; else, just load the dev/test-sets
     trainsampler, devsampler, testsampler = None, None, None
     if split_dataset is False:
-        devset = WSDataset(dev_path, src2id, embeddings, embedding_dim, embeddings_input, max_labels, lemma2synsets,
-                           single_softmax, synset2id, pos_filter=pos_filter)
-        testset = WSDataset(test_path, src2id, embeddings, embedding_dim, embeddings_input, max_labels, lemma2synsets,
-                            single_softmax, synset2id, pos_filter=pos_filter)
+        devset = WSDataset(device, dev_path, src2id, embeddings, embedding_dim, embeddings_input, max_labels,
+                           lemma2synsets, single_softmax, synset2id, pos_filter=pos_filter)
+        testset = WSDataset(device, test_path, src2id, embeddings, embedding_dim, embeddings_input, max_labels,
+                            lemma2synsets, single_softmax, synset2id, pos_filter=pos_filter)
         trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True)
         devloader = torch.utils.data.DataLoader(devset, batch_size=batch_size, shuffle=False)
         testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size, shuffle=False)
@@ -287,11 +293,14 @@ if __name__ == "__main__":
 
 
     # Redirect print statements to both terminal and logfile
+    results_file = open(os.path.join(save_path, "results.txt"), 'w+')
+    # sys.stdout = Logger(os.path.join(save_path, "results.txt"))
     sys.stdout = Logger(os.path.join(save_path, "results.txt"))
 
     # Construct the model
-    model = WSDModel(embedding_dim, embeddings, hidden_neurons, hidden_layers, dropout, output_layers, lemma2synsets,
+    model = WSDModel(lang, embedding_dim, embeddings, hidden_neurons, hidden_layers, dropout, output_layers, lemma2synsets,
                      synset2id, trainset.known_pos, trainset.known_entity_tags, use_flair=use_flair, embeddings_path=embeddings_path)
+    model.to(device)
     loss_func_embed = torch.nn.MSELoss()
     if crf_layer is True:
         if "classify_wsd" in output_layers:

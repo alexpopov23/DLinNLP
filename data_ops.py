@@ -33,10 +33,11 @@ class Sample():
 
 class WSDataset(Dataset):
 
-    def __init__(self, tsv_data, src2id, embeddings, embeddings_dim, embeddings_input, max_labels, lemma2synsets,
+    def __init__(self, device, tsv_data, src2id, embeddings, embeddings_dim, embeddings_input, max_labels, lemma2synsets,
                  single_softmax, known_synsets=None, pos_map=None, pos_filter=False):
         # Our data has some pretty long sentences, so we will set a large max length
         # Alternatively, can throw them out or truncate them
+        self.device = device
         self.src2id = src2id
         self.embeddings = embeddings
         self.embeddings_dim = embeddings_dim
@@ -157,16 +158,16 @@ class WSDataset(Dataset):
                 "pos": sample.pos,
                 "synsets": sample.synsets,
                 "entities": sample.entities,
-                "inputs": torch.tensor(inputs, dtype=torch.long),
-                "targets_embed": torch.stack(targets_embed).clone().detach(),
-                "neg_targets": torch.stack(neg_targets).clone().detach(),
+                "inputs": torch.tensor(inputs, dtype=torch.long).to(self.device),
+                "targets_embed": torch.stack(targets_embed).clone().detach().to(self.device),
+                "neg_targets": torch.stack(neg_targets).clone().detach().to(self.device),
                 "sentence": sample.sentence_str,
-                "targets_classify": torch.tensor(targets_classify, dtype=torch.long),
-                "targets_pos": torch.tensor(targets_pos, dtype=torch.long),
-                "targets_ner": torch.tensor(targets_ner, dtype=torch.long),
-                "mask": torch.tensor(mask, dtype=torch.bool),
-                "pos_mask": torch.tensor(pos_mask, dtype=torch.bool),
-                "ner_mask": torch.tensor(ner_mask, dtype=torch.bool)}
+                "targets_classify": torch.tensor(targets_classify, dtype=torch.long).to(self.device),
+                "targets_pos": torch.tensor(targets_pos, dtype=torch.long).to(self.device),
+                "targets_ner": torch.tensor(targets_ner, dtype=torch.long).to(self.device),
+                "mask": torch.tensor(mask, dtype=torch.bool).to(self.device),
+                "pos_mask": torch.tensor(pos_mask, dtype=torch.bool).to(self.device),
+                "ner_mask": torch.tensor(ner_mask, dtype=torch.bool).to(self.device)}
         return data
 
     def parse_tsv(self, dataset_path, max_length, pos_map=None, pos_filter=False):
