@@ -60,9 +60,13 @@ def eval_loop(data_loader, known_lemmas, model, output_layers):
     matches_pos_all, total_pos_all = 0, 0
     tps_all, fps_all, fns_all = 0, 0, 0
     accuracy_embed, accuracy_classify, accuracy_pos, f1_ner = 0.0, 0.0, 0.0, 0.0
+    log = "LEMMA\tALL OPTIONS\tSELECTED SENSE\tGOLD SENSES\n"
     for eval_data in data_loader:
         # lemmas = numpy.asarray(eval_data['lemmas_pos']).transpose()[eval_data["mask"]]
-        lemmas = numpy.asarray(eval_data['lemmas']).transpose()[eval_data["mask"]] # TODO: parametrize
+        if pos_filter is True:
+            lemmas = numpy.asarray(eval_data['lemmas_pos']).transpose()[eval_data["mask"]]
+        else:
+            lemmas = numpy.asarray(eval_data['lemmas']).transpose()[eval_data["mask"]]
         default_disambiguations = disambiguate_by_default(lemmas, known_lemmas)
         synsets = numpy.asarray(eval_data['synsets']).transpose()[eval_data["mask"]]
         # pos = numpy.asarray(eval_data['pos']).transpose()[eval_data["mask"]]
@@ -82,7 +86,7 @@ def eval_loop(data_loader, known_lemmas, model, output_layers):
             total_embed_all += total_embed
         if "classify_wsd" in output_layers:
             targets_classify = torch.masked_select(eval_data["targets_classify"], eval_data["mask"])
-            matches_classify, total_classify = calculate_accuracy_classification_wsd(
+            matches_classify, total_classify, batch_log = calculate_accuracy_classification_wsd(
                 outputs["classify_wsd"].detach().numpy(),
                 targets_classify.detach().numpy(),
                 default_disambiguations,
@@ -92,6 +96,7 @@ def eval_loop(data_loader, known_lemmas, model, output_layers):
                 lemma2synsets,
                 synset2id,
                 single_softmax)
+            log += batch_log
             matches_classify_all += matches_classify
             total_classify_all += total_classify
         if "pos_tagger" in output_layers:
@@ -134,7 +139,7 @@ def eval_loop(data_loader, known_lemmas, model, output_layers):
         accuracy_classify = matches_classify_all * 1.0 / total_classify_all if total_classify_all > 0 else 0
         accuracy_pos = matches_pos_all * 1.0 / total_pos_all if total_pos_all > 0 else 0
         _, _, f1_ner = get_granular_f1(tps_all, fps_all, fns_all)
-    return accuracy_embed, accuracy_classify, accuracy_pos, f1_ner
+    return accuracy_embed, accuracy_classify, accuracy_pos, f1_ner, log
 
 if __name__ == "__main__":
 
@@ -163,6 +168,8 @@ if __name__ == "__main__":
                         help='Are these embeddings of wordforms or lemmas? Options are: wordform, lemma')
     parser.add_argument('-embeddings2_input', dest='embeddings2_input', required=False, default="lemma",
                         help='Are these embeddings of wordforms or lemmas? Options are: wordform, lemma')
+    parser.add_argument('-epochs', dest='epochs', required=False, default=100,
+                        help='How many epochs should the NN train for?')
     parser.add_argument('-f_indices', dest='f_indices', required=False, default="",
                         help='File storing the indices for the train/dev/test split of the data, if reading from 1 dataset.')
     parser.add_argument('-f_pos_map', dest='f_pos_map', required=False,
@@ -205,6 +212,8 @@ if __name__ == "__main__":
 
     # Figure out what device to run the network on
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    print("Device is :" + str(device))
+    print(torch.cuda.is_available())
 
     # Get the embeddings and lexicon
     args = parser.parse_args()
@@ -234,6 +243,7 @@ if __name__ == "__main__":
     hidden_neurons = int(args.n_hidden_neurons)
     hidden_layers = int(args.n_hidden_layers)
     dropout = float(args.dropout)
+    epochs = int(args.epochs)
     learning_rate = float(args.learning_rate)
 
     # Get the training/dev/testing data
@@ -321,7 +331,7 @@ if __name__ == "__main__":
     if args.mode == "evaluate":
         model.load_state_dict(torch.load(args.save_path))
         model.eval()
-        test_accuracy_embed, test_accuracy_classify = eval_loop(testloader, model, output_layers)
+        test_accuracy_embed, test_accuracy_classify, log = eval_loop(testloader, model, output_layers)
         print("Test embedding accuracy: " + str(test_accuracy_embed))
         print("Test classification accuracy: " + str(test_accuracy_classify))
 
@@ -332,7 +342,7 @@ if __name__ == "__main__":
         best_accuracy_embed, best_accuracy_classify, best_accuracy_pos, best_f1_ner = 0.0, 0.0, 0.0, 0.0
         best_test_embed, best_test_classify, best_test_pos, best_test_ner = 0.0, 0.0, 0.0, 0.0
         eval_at = 100
-        for epoch in range(100):
+        for epoch in range(epochs):
             print("***** Start of epoch " + str(epoch) + " *****")
             average_loss_embed, average_loss_classify, average_loss_pos, average_loss_ner, average_loss_overall = \
                 0.0, 0.0, 0.0, 0.0, 0.0
@@ -340,7 +350,10 @@ if __name__ == "__main__":
                 model.train()
                 optimizer.zero_grad()
                 # lemmas = numpy.asarray(data['lemmas_pos']).transpose()[data["mask"]]
-                lemmas = numpy.asarray(data['lemmas']).transpose()[data["mask"]] # TODO: parametrize
+                if pos_filter is True:
+                    lemmas = numpy.asarray(data['lemmas_pos']).transpose()[data["mask"]]
+                else:
+                    lemmas = numpy.asarray(data['lemmas']).transpose()[data["mask"]] # TODO: parametrize
                 default_disambiguations = disambiguate_by_default(lemmas, trainset.known_lemmas)
                 synsets = numpy.asarray(data['synsets']).transpose()[data["mask"]]
                 # lengths_labels = numpy.asarray(data["lengths_labels"])[data["mask"]]
@@ -415,7 +428,7 @@ if __name__ == "__main__":
                         print("Average embedding loss (training): " + str(average_loss_embed.detach().numpy()))
                         average_loss_overall += average_loss_embed.detach().numpy()
                     if "classify_wsd" in output_layers:
-                        matches_classify, total_classify = calculate_accuracy_classification_wsd(
+                        matches_classify, total_classify, log = calculate_accuracy_classification_wsd(
                                 outputs["classify_wsd"].detach().numpy(),
                                 targets_classify.detach().numpy(),
                                 default_disambiguations,
@@ -476,7 +489,7 @@ if __name__ == "__main__":
                         0.0, 0.0, 0.0, 0.0, 0.0
 
                     # Loop over the dev dataset
-                    dev_accuracy_embed, dev_accuracy_classify, dev_accuracy_pos, dev_f1_ner = \
+                    dev_accuracy_embed, dev_accuracy_classify, dev_accuracy_pos, dev_f1_ner, dev_log = \
                         eval_loop(devloader, trainset.known_lemmas, model, output_layers)
                     print("Dev embedding accuracy: " + str(dev_accuracy_embed))
                     print("Dev classification accuracy: " + str(dev_accuracy_classify))
@@ -518,8 +531,10 @@ if __name__ == "__main__":
                         best_result = True
                     if best_result is True:
                         # Eval on the test dataset as well
-                        test_accuracy_embed, test_accuracy_classify, test_pos_accuracy, test_n1_fscore = \
+                        test_accuracy_embed, test_accuracy_classify, test_pos_accuracy, test_n1_fscore, test_log = \
                             eval_loop(testloader, trainset.known_lemmas, model, output_layers)
+                        with open(os.path.join(save_path, "eval_log.csv"), "w") as f:
+                            f.write(test_log)
                         best_test_embed = test_accuracy_embed \
                             if test_accuracy_embed > best_test_embed else best_test_embed
                         best_test_classify = test_accuracy_classify \

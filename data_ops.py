@@ -15,7 +15,7 @@ from torch.utils.data import Dataset
 
 CUSTOM_FIELDS = ('form', 'lemma', 'pos', 'synsets', 'entity')
 
-POS_MAP = {"NOUN": "n", "VERB": "v", "ADJ": "a", "ADV": "r"}
+POS_MAP_SIMPLE = {"NOUN": "n", "VERB": "v", "ADJ": "a", "ADV": "r"}
 
 
 class Sample():
@@ -192,24 +192,30 @@ class WSDataset(Dataset):
                         if pos in pos_map:
                             pos = pos_map[pos]
                     # pos = POS_MAP[pos] if pos in POS_MAP else pos
-                    lemma_pos = lemma + "-" + POS_MAP[pos] if pos in POS_MAP else lemma # TODO: handle different POS tags
+                    # lemma_pos = lemma + "-" + POS_MAP_SIMPLE[pos] if pos in POS_MAP_SIMPLE else lemma # TODO: handle different POS tags
                     synsets = token["synsets"]
+                    if synsets != "_":
+                        pos_id = synsets.split(',')[0][-1]
+                    else:
+                        pos_id = ""
+                    lemma_pos = lemma + "-" + pos_id
                     entity = token['entity']
                     sample.lemmas.append(lemma)
                     sample.pos.append(pos)
                     sample.lemmas_pos.append(lemma_pos)
                     sample.entities.append(entity)
                     sample.synsets.append(synsets)
-                    if synsets != "_":
-                        if lemma not in self.lemma2synsets:
-                            self.lemma2synsets[lemma] = [synsets]
-                        else:
-                            if synsets not in self.lemma2synsets[lemma]:
-                                self.lemma2synsets[lemma].append(synsets)
                     if pos_filter is True:
-                        self.known_lemmas.add(lemma_pos)
+                        lemma_id = lemma_pos
                     else:
-                        self.known_lemmas.add(lemma)
+                        lemma_id = lemma
+                    if synsets != "_":
+                        if lemma_id not in self.lemma2synsets:
+                            self.lemma2synsets[lemma_id] = [synsets]
+                        else:
+                            if synsets not in self.lemma2synsets[lemma_id]:
+                                self.lemma2synsets[lemma_id].append(synsets)
+                    self.known_lemmas.add(lemma_id)
                     self.known_pos.add(pos)
                     self.known_entity_tags.add(entity)
                     sentence_str.append(token["form"])

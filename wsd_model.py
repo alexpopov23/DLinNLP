@@ -205,6 +205,7 @@ def calculate_accuracy_embedding(outputs, lemmas, gold_synsets, lemma2synsets, e
 def calculate_accuracy_classification_wsd(outputs, targets, default_disambiguations, lemmas=None, known_lemmas=None,
                                           synsets=None, lemma2synsets=None, synset2id=None, single_softmax=False):
     matches, total = 0, 0
+    log = ""
     if single_softmax is False:
         choices = numpy.argmax(outputs, axis=1)
         # This loop makes sure that we take the 1st sense heuristics for lemmas unseen in training
@@ -228,10 +229,11 @@ def calculate_accuracy_classification_wsd(outputs, targets, default_disambiguati
                             max_synset = synset
                 if max_synset in synsets[i].split(","):
                     matches += 1
+                log += lemmas[i] + "\t" + ",".join(permitted_synsets) + "\t" + max_synset + "\t" + synsets[i] + "\n"
         elif lemma2synsets[lemmas[i]][choice] in synsets[i].split(","):
                 matches += 1
         total += 1
-    return matches, total
+    return matches, total, log
 
 def calculate_accuracy_classification(outputs, targets):
     choices = torch.argmax(outputs, dim=1)
