@@ -14,9 +14,10 @@ class WSDModel(nn.Module):
 
     def __init__(self, lang, embeddings_dim, embedding_weights, hidden_dim, hidden_layers, dropout,
                  output_layers=["embed_wsd"], lemma2synsets=None, synsets2id={}, pos_tags={},
-                 entity_tags={}, use_flair=False, embeddings_path=None):
+                 entity_tags={}, use_flair=False, combine_WN_FN=False):
         super(WSDModel, self).__init__()
         self.use_flair = use_flair
+        self.combine_WN_FN = combine_WN_FN
         self.output_layers = output_layers
         self.hidden_layers = hidden_layers
         self.hidden_dim = hidden_dim
@@ -67,6 +68,9 @@ class WSDModel(nn.Module):
             # We want output with the size of the lemma&synset embeddings
             self.emb_relu = nn.ReLU()
             self.output_emb = nn.Linear(2*hidden_dim, output_emb_dim)
+        if "embed_frameid" in self.output_layers:
+            self.emb_relu_frames = nn.ReLU()
+            self.output_emb_frames = nn.Linear(2 * hidden_dim, output_emb_dim)
         if "classify_wsd" in self.output_layers:
             if len(self.synsets2id) > 0:
                 self.output_classify = nn.Linear(2*hidden_dim, len(self.synsets2id))
@@ -84,7 +88,7 @@ class WSDModel(nn.Module):
             self.ner = nn.Linear(2 * hidden_dim, len(entity_tags))
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, data, lemmas):
+    def forward(self, data, lemmas, source_ids=None):
         if self.use_flair is True:
             X = data["sentence"]
             X = [Sentence(sent) for sent in X]
@@ -111,28 +115,37 @@ class WSDModel(nn.Module):
         X_wsd = X_wsd.view(-1, 2 * self.hidden_dim)  # shape is [num_labels, 2*hidden_dim]
         outputs = {}
         for layer in self.output_layers:
-            if layer == "embed_wsd":
-
-                outputs["embed_wsd"] = self.dropout(self.output_emb(self.emb_relu(X_wsd)))
-            if layer == "classify_wsd":
-                if len(self.synsets2id) > 0:
-                    outputs["classify_wsd"] = self.dropout(self.output_classify(X_wsd))
-                else:
-                    outputs_classif = []
-                    for i, x in enumerate(torch.unbind(X_wsd)):
-                        # lemma_pos = lemmas[i] + "-" + POS_MAP[pos[i]]
-                        output_classif = self.dropout(self.classifiers._modules[lemmas[i]](x))
-                        outputs_classif.append(output_classif)
-                    outputs_classif = pad_sequence(outputs_classif, batch_first=True, padding_value=-100)
-                    outputs["classify_wsd"] = outputs_classif
-            if layer == "pos_tagger":
-                outputs["pos_tagger"] = pad_sequence(self.dropout(self.pos_tags(X)),
-                                                     batch_first=True,
-                                                     padding_value=-100)
-            if layer == "ner":
-                outputs["ner"] = pad_sequence(self.dropout(self.ner(X)),
-                                              batch_first=True,
-                                              padding_value=-100)
+            if self.combine_WN_FN is True:
+                outputs_emb = []
+                for i, x in enumerate(torch.unbind(X_wsd)):
+                    if source_ids[i] == "WSD":
+                        output = self.dropout(self.output_emb(self.emb_relu(x)))
+                    elif source_ids[i] == "FrameID":
+                        output = self.dropout(self.output_emb_frames(self.emb_relu_frames(x)))
+                    outputs_emb.append(output)
+                outputs["embed_wsd"] = outputs_emb
+            else:
+                if layer == "embed_wsd":
+                    outputs["embed_wsd"] = self.dropout(self.output_emb(self.emb_relu(X_wsd)))
+                if layer == "classify_wsd":
+                    if len(self.synsets2id) > 0:
+                        outputs["classify_wsd"] = self.dropout(self.output_classify(X_wsd))
+                    else:
+                        outputs_classif = []
+                        for i, x in enumerate(torch.unbind(X_wsd)):
+                            # lemma_pos = lemmas[i] + "-" + POS_MAP[pos[i]]
+                            output_classif = self.dropout(self.classifiers._modules[lemmas[i]](x))
+                            outputs_classif.append(output_classif)
+                        outputs_classif = pad_sequence(outputs_classif, batch_first=True, padding_value=-100)
+                        outputs["classify_wsd"] = outputs_classif
+                if layer == "pos_tagger":
+                    outputs["pos_tagger"] = pad_sequence(self.dropout(self.pos_tags(X)),
+                                                         batch_first=True,
+                                                         padding_value=-100)
+                if layer == "ner":
+                    outputs["ner"] = pad_sequence(self.dropout(self.ner(X)),
+                                                  batch_first=True,
+                                                  padding_value=-100)
         return outputs
 
     def forward_old(self, X, X_lengths, mask, pos_mask, lemmas):

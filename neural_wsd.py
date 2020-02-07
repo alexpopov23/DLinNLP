@@ -8,9 +8,10 @@ import torch
 
 from torchcrf import CRF
 from torch.utils.data.sampler import SubsetRandomSampler
+from torch.utils.data.dataset import ConcatDataset
 
 from auxiliary import Logger
-from data_ops import WSDataset, load_embeddings, get_wordnet_lexicon
+from data_ops import WSDataset, BatchSchedulerSampler, load_embeddings, get_wordnet_lexicon
 from wsd_model import WSDModel, calculate_accuracy_embedding, calculate_accuracy_classification, \
     calculate_accuracy_classification_wsd, calculate_accuracy_crf, calculate_f1_ner, get_granular_f1
 
@@ -148,6 +149,8 @@ if __name__ == "__main__":
                         help='Coefficient to weight the positive and negative labels.')
     parser.add_argument('-batch_size', dest='batch_size', required=False, default=128,
                         help='Size of the training batches.')
+    parser.add_argument('-combine_WN_FN', dest='combine_WN_FN', required=False, default=False,
+                        help='True if information is provided from both WordNet and FrameNet corpora.')
     parser.add_argument('-crf_layer', dest='crf_layer', required=False, default=False,
                         help='Whether to use a CRF layer on top of the LSTM. Indicate True if yes.')
     parser.add_argument('-dev_data_path', dest='dev_data_path', required=False,
@@ -174,6 +177,12 @@ if __name__ == "__main__":
                         help='File storing the indices for the train/dev/test split of the data, if reading from 1 dataset.')
     parser.add_argument('-f_pos_map', dest='f_pos_map', required=False,
                         help='File with mapping between more and less granular tagsets.')
+    parser.add_argument('-frame_path_dev', dest='frame_path_dev', required=False,
+                        help='Path to frame dev data.')
+    parser.add_argument('-frame_path_test', dest='frame_path_test', required=False,
+                        help='Path to frame test data.')
+    parser.add_argument('-frame_path_train', dest='frame_path_train', required=False,
+                        help='Path to frame training data.')
     parser.add_argument('-language', dest='language', required=True,
                         help='What language is processing done in: English or Bulgarian?')
     parser.add_argument('-learning_rate', dest='learning_rate', required=False, default=0.2,
@@ -220,6 +229,7 @@ if __name__ == "__main__":
     lang = args.language
     embeddings_path = args.embeddings_path
     use_flair = True if args.use_flair == "True" else False
+    combine_WN_FN = True if args.combine_WN_FN == "True" else False
     embeddings, src2id, id2src = load_embeddings(embeddings_path)
     embeddings = torch.Tensor(embeddings)
     embedding_dim = embeddings.shape[1]
@@ -251,6 +261,9 @@ if __name__ == "__main__":
     train_path = args.train_data_path
     dev_path = args.dev_data_path
     test_path = args.test_data_path
+    frame_path_train = args.frame_path_train
+    frame_path_dev = args.frame_path_dev
+    frame_path_test = args.frame_path_test
     f_indices = args.f_indices
     f_pos_map = args.f_pos_map
     split_dataset = False
@@ -259,6 +272,19 @@ if __name__ == "__main__":
         split_dataset = True
     trainset = WSDataset(device, train_path, src2id, embeddings, embedding_dim, embeddings_input, max_labels,
                          lemma2synsets, single_softmax, pos_map=f_pos_map, pos_filter=pos_filter)
+    known_pos = trainset.known_pos
+    known_lemmas = trainset.known_lemmas
+    known_entity_tags = trainset.known_entity_tags
+    # if combine_WN_FN is True:
+    #     trainset_frameID = WSDataset(device, frame_path_train, src2id, embeddings, embedding_dim, embeddings_input, max_labels,
+    #                                  lemma2synsets, single_softmax, pos_map=f_pos_map, pos_filter=False)
+    #     devset_frameID = WSDataset(device, frame_path_dev, src2id, embeddings, embedding_dim, embeddings_input, max_labels,
+    #                                lemma2synsets, single_softmax, pos_map=f_pos_map, pos_filter=False)
+    #     testset_frameID = WSDataset(device, frame_path_test, src2id, embeddings, embedding_dim, embeddings_input, max_labels,
+    #                                 lemma2synsets, single_softmax, pos_map=f_pos_map, pos_filter=False)
+    #     # trainloader_frameID = torch.utils.data.DataLoader(trainset_frameID, batch_size=batch_size, shuffle=True)
+    #     # devloader_frameID = torch.utils.data.DataLoader(devset_frameID, batch_size=batch_size, shuffle=False)
+    #     # testloader_frameID = torch.utils.data.DataLoader(testset_frameID, batch_size=batch_size, shuffle=False)
     if single_softmax is True:
         synset2id = trainset.known_synsets
     else:
@@ -266,14 +292,62 @@ if __name__ == "__main__":
 
     # if there is only a single dataset for train/dev/test purposes, sample from it; else, just load the dev/test-sets
     trainsampler, devsampler, testsampler = None, None, None
+    # if combine_WN_FN is True:
+    #     trainset = ConcatDataset([trainset, trainset_frameID])
+    #     devset = ConcatDataset([devset, devset_frameID])
+    #     testset = ConcatDataset([testset, testset_frameID])
+    #     trainloader = torch.utils.data.DataLoader(dataset=concat_dataset,
+    #                                               sampler=BatchSchedulerSampler(dataset=concat_dataset,
+    #                                                                             batch_size=batch_size),
+    #                                               batch_size=batch_size,
+    #                                               shuffle=False)
+    #     trainloader = torch.utils.data.DataLoader(dataset=concat_dataset,
+    #                                               sampler=BatchSchedulerSampler(dataset=concat_dataset,
+    #                                                                             batch_size=batch_size),
+    #                                               batch_size=batch_size,
+    #                                               shuffle=False)
+    #     trainloader = torch.utils.data.DataLoader(dataset=concat_dataset,
+    #                                               sampler=BatchSchedulerSampler(dataset=concat_dataset,
+    #                                                                             batch_size=batch_size),
+    #                                               batch_size=batch_size,
+    #                                               shuffle=False)
     if split_dataset is False:
         devset = WSDataset(device, dev_path, src2id, embeddings, embedding_dim, embeddings_input, max_labels,
                            lemma2synsets, single_softmax, synset2id, pos_filter=pos_filter)
         testset = WSDataset(device, test_path, src2id, embeddings, embedding_dim, embeddings_input, max_labels,
                             lemma2synsets, single_softmax, synset2id, pos_filter=pos_filter)
-        trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True)
-        devloader = torch.utils.data.DataLoader(devset, batch_size=batch_size, shuffle=False)
-        testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size, shuffle=False)
+        if combine_WN_FN is True:
+            trainset_frameID = WSDataset(device, frame_path_train, src2id, embeddings, embedding_dim, embeddings_input,
+                                         max_labels,
+                                         lemma2synsets, single_softmax, pos_map=f_pos_map, pos_filter=False)
+            devset_frameID = WSDataset(device, frame_path_dev, src2id, embeddings, embedding_dim, embeddings_input,
+                                       max_labels,
+                                       lemma2synsets, single_softmax, pos_map=f_pos_map, pos_filter=False)
+            testset_frameID = WSDataset(device, frame_path_test, src2id, embeddings, embedding_dim, embeddings_input,
+                                        max_labels,
+                                        lemma2synsets, single_softmax, pos_map=f_pos_map, pos_filter=False)
+            trainset = ConcatDataset([trainset, trainset_frameID])
+            devset = ConcatDataset([devset, devset_frameID])
+            testset = ConcatDataset([testset, testset_frameID])
+            trainloader = torch.utils.data.DataLoader(dataset=trainset,
+                                                      sampler=BatchSchedulerSampler(dataset=trainset,
+                                                                                    batch_size=batch_size),
+                                                      batch_size=batch_size,
+                                                      shuffle=False)
+            devloader = torch.utils.data.DataLoader(dataset=devset,
+                                                    sampler=BatchSchedulerSampler(dataset=devset,
+                                                                                  batch_size=batch_size),
+                                                    batch_size=batch_size,
+                                                    shuffle=False)
+            testloader = torch.utils.data.DataLoader(dataset=testset,
+                                                     sampler=BatchSchedulerSampler(dataset=testset,
+                                                                                   batch_size=batch_size),
+                                                     batch_size=batch_size,
+                                                     shuffle=False)
+        else:
+            trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True)
+            devloader = torch.utils.data.DataLoader(devset, batch_size=batch_size, shuffle=False)
+            testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size, shuffle=False)
     else:
         if os.path.exists(f_indices):
             with open(f_indices, "rb") as f:
@@ -309,16 +383,16 @@ if __name__ == "__main__":
 
     # Construct the model
     model = WSDModel(lang, embedding_dim, embeddings, hidden_neurons, hidden_layers, dropout, output_layers, lemma2synsets,
-                     synset2id, trainset.known_pos, trainset.known_entity_tags, use_flair=use_flair, embeddings_path=embeddings_path)
+                     synset2id, known_pos, known_entity_tags, use_flair=use_flair, combine_WN_FN=combine_WN_FN)
     model.to(device)
     loss_func_embed = torch.nn.MSELoss()
     if crf_layer is True:
         if "classify_wsd" in output_layers:
             loss_func_classify = torch.nn.CrossEntropyLoss(ignore_index=-100)
         if "pos_tagger" in output_layers:
-            loss_func_pos = CRF(len(trainset.known_pos), batch_first=True)
+            loss_func_pos = CRF(len(known_pos), batch_first=True)
         if "ner" in output_layers:
-            loss_func_ner = CRF(len(trainset.known_entity_tags), batch_first=True)
+            loss_func_ner = CRF(len(known_entity_tags), batch_first=True)
     else:
         loss_func_classify = torch.nn.CrossEntropyLoss(ignore_index=-100)
         loss_func_pos = torch.nn.CrossEntropyLoss()
@@ -347,6 +421,8 @@ if __name__ == "__main__":
             average_loss_embed, average_loss_classify, average_loss_pos, average_loss_ner, average_loss_overall = \
                 0.0, 0.0, 0.0, 0.0, 0.0
             for step, data in enumerate(trainloader):
+                if combine_WN_FN is True:
+                    print("Training on SemCor")
                 model.train()
                 optimizer.zero_grad()
                 # lemmas = numpy.asarray(data['lemmas_pos']).transpose()[data["mask"]]
@@ -354,7 +430,7 @@ if __name__ == "__main__":
                     lemmas = numpy.asarray(data['lemmas_pos']).transpose()[data["mask"]]
                 else:
                     lemmas = numpy.asarray(data['lemmas']).transpose()[data["mask"]] # TODO: parametrize
-                default_disambiguations = disambiguate_by_default(lemmas, trainset.known_lemmas)
+                default_disambiguations = disambiguate_by_default(lemmas, known_lemmas)
                 synsets = numpy.asarray(data['synsets']).transpose()[data["mask"]]
                 # lengths_labels = numpy.asarray(data["lengths_labels"])[data["mask"]]
                 # outputs = model(data["inputs"], data["length"], data["mask"], data["pos_mask"], lemmas)
@@ -547,6 +623,25 @@ if __name__ == "__main__":
                         print("Test classification accuracy: " + str(test_accuracy_classify))
                         print("Test pos tagging accuracy: " + str(test_pos_accuracy))
                         print("Test ner F1 score: " + str(test_n1_fscore))
+            for step, data in enumerate(trainloader_frameID):
+                model.train()
+                optimizer.zero_grad()
+                lus = numpy.asarray(data['lemmas']).transpose()[data["mask"]] # TODO: parametrize
+                frames = numpy.asarray(data['synsets']).transpose()[data["mask"]]
+                outputs = model(data, lus)
+                loss = 0.0
+                # Calculate loss for the context embedding method
+                if "embed_wsd" in output_layers:
+                    mask_embed = torch.reshape(data["mask"], (data["mask"].shape[0], data["mask"].shape[1], 1))
+                    targets_embed = torch.masked_select(data["targets_embed"], mask_embed)
+                    targets_embed = targets_embed.view(-1, embedding_dim)
+                    neg_targets = torch.masked_select(data["neg_targets"], mask_embed)
+                    neg_targets = neg_targets.view(-1, embedding_dim)
+                    # targets_classify = targets_classify.view(-1, max_labels)
+                    loss_embed = alpha * loss_func_embed(outputs["embed_wsd"], targets_embed) + \
+                                 (1 - alpha) * (1 - loss_func_embed(outputs["embed_wsd"], neg_targets))
+                    loss += loss_embed
+                    average_loss_embed += loss_embed
         print("Best context embedding accuracy on the test data: " + str(best_test_embed))
         print("Best WSD accuracy on the test data: " + str(best_test_classify))
         print("Best POS tagging accuracy on the test data: " + str(best_test_pos))

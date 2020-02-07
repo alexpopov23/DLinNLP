@@ -12,10 +12,98 @@ import xml.etree.ElementTree as ET
 
 from conllu import parse
 from torch.utils.data import Dataset
+from torch.utils.data.sampler import RandomSampler
 
 CUSTOM_FIELDS = ('form', 'lemma', 'pos', 'synsets', 'entity')
 
 POS_MAP_SIMPLE = {"NOUN": "n", "VERB": "v", "ADJ": "a", "ADV": "r"}
+
+
+
+class ConcatDataLoader(torch.utils.data.DataLoader):
+    def __init__(self, *dataloaders):
+        self.dataloaders = dataloaders
+        self.thresholds = []
+        init_threshold = 0.0
+        for d in self.dataloaders:
+            init_threshold += len(d._index_sampler)
+            self.thresholds.add(init_threshold)
+
+    def __getitem__(self, i):
+
+        return tuple(d[i] for d in self.datasets)
+
+    def __len__(self):
+        return sum(len(d._index_sampler) for d in self.dataloaders)
+
+'''Source: https://github.com/bomri/code-for-posts/tree/master/mtl-data-loading'''
+class BatchSchedulerSampler(torch.utils.data.sampler.Sampler):
+    """
+    iterate over tasks and provide a random batch per task in each mini-batch
+    """
+    def __init__(self, dataset, batch_size):
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.number_of_datasets = len(dataset.datasets)
+        self.total_length = sum(len(dataset) for dataset in dataset.datasets)
+        self.partitions = [cur_length*1.0/self.total_length for cur_length in dataset.cumulative_sizes]
+
+    def __len__(self):
+        return len(self.dataset) * self.number_of_datasets
+
+    def __iter__(self):
+        samplers_list = []
+        sampler_iterators = []
+        datasets_length = []
+        for dataset_idx in range(self.number_of_datasets):
+            cur_dataset = self.dataset.datasets[dataset_idx]
+            sampler = RandomSampler(cur_dataset)
+            samplers_list.append(sampler)
+            cur_sampler_iterator = sampler.__iter__()
+            sampler_iterators.append(cur_sampler_iterator)
+            datasets_length.append(len(cur_dataset))
+
+        push_index_val = [0] + self.dataset.cumulative_sizes[:-1]
+        step = self.batch_size # * self.number_of_datasets
+        samples_to_grab = self.batch_size
+        largest_dataset_index = torch.argmax(torch.as_tensor(datasets_length)).item()
+        # for this case we want to get all samples in dataset, this force us to resample from the smaller datasets
+        # epoch_samples = datasets_length[largest_dataset_index] * self.number_of_datasets
+        # iterate over the total length of the combined datasets (slightly oversampling some datasets, and undersampling others)
+        epoch_samples = self.total_length
+
+        final_samples_list = []  # this is a list of indexes from the combined dataset
+        for _ in range(0, epoch_samples, step):
+            #TODO instead of alternating between datasets, flip a (weighted) coin every time
+            coin_toss = torch.rand(1).item()
+            for threshold in self.partitions:
+                if threshold > coin_toss:
+                    i = self.partitions.index(threshold)
+                    break
+            # for i in range(self.number_of_datasets):
+            cur_batch_sampler = sampler_iterators[i]
+            cur_samples = []
+            for _ in range(samples_to_grab):
+                try:
+                    cur_sample_org = cur_batch_sampler.__next__()
+                    cur_sample = cur_sample_org + push_index_val[i]
+                    cur_samples.append(cur_sample)
+                except StopIteration:
+                    if i == largest_dataset_index:
+                        # largest dataset iterator is done we can break
+                        samples_to_grab = len(cur_samples)  # adjusting the samples_to_grab
+                        # got to the end of iterator - extend final list and continue to next task if possible
+                        break
+                    else:
+                        # restart the iterator - we want more samples until finishing with the largest dataset
+                        sampler_iterators[i] = samplers_list[i].__iter__()
+                        cur_batch_sampler = sampler_iterators[i]
+                        cur_sample_org = cur_batch_sampler.__next__()
+                        cur_sample = cur_sample_org + push_index_val[i]
+                        cur_samples.append(cur_sample)
+            final_samples_list.extend(cur_samples)
+
+        return iter(final_samples_list)
 
 
 class Sample():
