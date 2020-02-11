@@ -68,7 +68,7 @@ class WSDModel(nn.Module):
             # We want output with the size of the lemma&synset embeddings
             self.emb_relu = nn.ReLU()
             self.output_emb = nn.Linear(2*hidden_dim, output_emb_dim)
-        if "embed_frameid" in self.output_layers:
+        if "embed_frameID" in self.output_layers:
             self.emb_relu_frames = nn.ReLU()
             self.output_emb_frames = nn.Linear(2 * hidden_dim, output_emb_dim)
         if "classify_wsd" in self.output_layers:
@@ -115,37 +115,39 @@ class WSDModel(nn.Module):
         X_wsd = X_wsd.view(-1, 2 * self.hidden_dim)  # shape is [num_labels, 2*hidden_dim]
         outputs = {}
         for layer in self.output_layers:
-            if self.combine_WN_FN is True:
-                outputs_emb = []
-                for i, x in enumerate(torch.unbind(X_wsd)):
-                    if source_ids[i] == "WSD":
-                        output = self.dropout(self.output_emb(self.emb_relu(x)))
-                    elif source_ids[i] == "FrameID":
-                        output = self.dropout(self.output_emb_frames(self.emb_relu_frames(x)))
-                    outputs_emb.append(output)
-                outputs["embed_wsd"] = outputs_emb
-            else:
-                if layer == "embed_wsd":
-                    outputs["embed_wsd"] = self.dropout(self.output_emb(self.emb_relu(X_wsd)))
-                if layer == "classify_wsd":
-                    if len(self.synsets2id) > 0:
-                        outputs["classify_wsd"] = self.dropout(self.output_classify(X_wsd))
-                    else:
-                        outputs_classif = []
-                        for i, x in enumerate(torch.unbind(X_wsd)):
-                            # lemma_pos = lemmas[i] + "-" + POS_MAP[pos[i]]
-                            output_classif = self.dropout(self.classifiers._modules[lemmas[i]](x))
-                            outputs_classif.append(output_classif)
-                        outputs_classif = pad_sequence(outputs_classif, batch_first=True, padding_value=-100)
-                        outputs["classify_wsd"] = outputs_classif
-                if layer == "pos_tagger":
-                    outputs["pos_tagger"] = pad_sequence(self.dropout(self.pos_tags(X)),
-                                                         batch_first=True,
-                                                         padding_value=-100)
-                if layer == "ner":
-                    outputs["ner"] = pad_sequence(self.dropout(self.ner(X)),
-                                                  batch_first=True,
-                                                  padding_value=-100)
+            # if self.combine_WN_FN is True:
+            #     outputs_emb = []
+            #     for i, x in enumerate(torch.unbind(X_wsd)):
+            #         if source_ids[i] == "WSD":
+            #             output = self.dropout(self.output_emb(self.emb_relu(x)))
+            #         elif source_ids[i] == "FrameID":
+            #             output = self.dropout(self.output_emb_frames(self.emb_relu_frames(x)))
+            #         outputs_emb.append(output)
+            #     outputs["embed_wsd"] = outputs_emb
+            # else:
+            if layer == "embed_wsd" and layer in data.batch_layers:
+                outputs["embed_wsd"] = self.dropout(self.output_emb(self.emb_relu(X_wsd)))
+            if layer == "embed_frameID" and layer in data.batch_layers:
+                outputs["embed_frameID"] = self.dropout(self.output_emb_frames(self.emb_relu_frames(X_wsd)))
+            if layer == "classify_wsd" and layer in data.batch_layers:
+                if len(self.synsets2id) > 0:
+                    outputs["classify_wsd"] = self.dropout(self.output_classify(X_wsd))
+                else:
+                    outputs_classif = []
+                    for i, x in enumerate(torch.unbind(X_wsd)):
+                        # lemma_pos = lemmas[i] + "-" + POS_MAP[pos[i]]
+                        output_classif = self.dropout(self.classifiers._modules[lemmas[i]](x))
+                        outputs_classif.append(output_classif)
+                    outputs_classif = pad_sequence(outputs_classif, batch_first=True, padding_value=-100)
+                    outputs["classify_wsd"] = outputs_classif
+            if layer == "pos_tagger" and layer in data.batch_layers:
+                outputs["pos_tagger"] = pad_sequence(self.dropout(self.pos_tags(X)),
+                                                     batch_first=True,
+                                                     padding_value=-100)
+            if layer == "ner" and layer in data.batch_layers:
+                outputs["ner"] = pad_sequence(self.dropout(self.ner(X)),
+                                              batch_first=True,
+                                              padding_value=-100)
         return outputs
 
     def forward_old(self, X, X_lengths, mask, pos_mask, lemmas):

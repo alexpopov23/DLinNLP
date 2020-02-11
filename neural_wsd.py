@@ -1,4 +1,5 @@
 import argparse
+import copy
 import itertools
 import numpy
 import os
@@ -270,8 +271,12 @@ if __name__ == "__main__":
 
     if dev_path is None and test_path is None:
         split_dataset = True
+    if combine_WN_FN is True:
+        wsd_batch_layers = copy.copy(output_layers)
+        wsd_batch_layers.remove("frameID")
+        frame_batch_layers = ["frameID"]
     trainset = WSDataset(device, train_path, src2id, embeddings, embedding_dim, embeddings_input, max_labels,
-                         lemma2synsets, single_softmax, pos_map=f_pos_map, pos_filter=pos_filter)
+                         lemma2synsets, single_softmax, wsd_batch_layers, pos_map=f_pos_map, pos_filter=pos_filter)
     known_pos = trainset.known_pos
     known_lemmas = trainset.known_lemmas
     known_entity_tags = trainset.known_entity_tags
@@ -313,19 +318,19 @@ if __name__ == "__main__":
     #                                               shuffle=False)
     if split_dataset is False:
         devset = WSDataset(device, dev_path, src2id, embeddings, embedding_dim, embeddings_input, max_labels,
-                           lemma2synsets, single_softmax, synset2id, pos_filter=pos_filter)
+                           lemma2synsets, single_softmax, wsd_batch_layers, synset2id, pos_filter=pos_filter)
         testset = WSDataset(device, test_path, src2id, embeddings, embedding_dim, embeddings_input, max_labels,
-                            lemma2synsets, single_softmax, synset2id, pos_filter=pos_filter)
+                            lemma2synsets, single_softmax, wsd_batch_layers, synset2id, pos_filter=pos_filter)
         if combine_WN_FN is True:
             trainset_frameID = WSDataset(device, frame_path_train, src2id, embeddings, embedding_dim, embeddings_input,
-                                         max_labels,
-                                         lemma2synsets, single_softmax, pos_map=f_pos_map, pos_filter=False)
+                                         max_labels, lemma2synsets, single_softmax, frame_batch_layers,
+                                         pos_map=f_pos_map, pos_filter=False)
             devset_frameID = WSDataset(device, frame_path_dev, src2id, embeddings, embedding_dim, embeddings_input,
-                                       max_labels,
-                                       lemma2synsets, single_softmax, pos_map=f_pos_map, pos_filter=False)
+                                       max_labels, lemma2synsets, single_softmax, frame_batch_layers,
+                                       pos_map=f_pos_map, pos_filter=False)
             testset_frameID = WSDataset(device, frame_path_test, src2id, embeddings, embedding_dim, embeddings_input,
-                                        max_labels,
-                                        lemma2synsets, single_softmax, pos_map=f_pos_map, pos_filter=False)
+                                        max_labels, lemma2synsets, single_softmax, frame_batch_layers,
+                                        pos_map=f_pos_map, pos_filter=False)
             trainset = ConcatDataset([trainset, trainset_frameID])
             devset = ConcatDataset([devset, devset_frameID])
             testset = ConcatDataset([testset, testset_frameID])
@@ -421,11 +426,10 @@ if __name__ == "__main__":
             average_loss_embed, average_loss_classify, average_loss_pos, average_loss_ner, average_loss_overall = \
                 0.0, 0.0, 0.0, 0.0, 0.0
             for step, data in enumerate(trainloader):
-                if combine_WN_FN is True:
-                    print("Training on SemCor")
                 model.train()
                 optimizer.zero_grad()
                 # lemmas = numpy.asarray(data['lemmas_pos']).transpose()[data["mask"]]
+                batch_layers = data.batch_layers[0][0]
                 if pos_filter is True:
                     lemmas = numpy.asarray(data['lemmas_pos']).transpose()[data["mask"]]
                 else:
@@ -437,7 +441,19 @@ if __name__ == "__main__":
                 outputs = model(data, lemmas)
                 loss = 0.0
                 # Calculate loss for the context embedding method
-                if "embed_wsd" in output_layers:
+                if "embed_wsd" in output_layers and "embed_wsd" in batch_layers:
+                    mask_embed = torch.reshape(data["mask"], (data["mask"].shape[0], data["mask"].shape[1], 1))
+                    targets_embed = torch.masked_select(data["targets_embed"], mask_embed)
+                    targets_embed = targets_embed.view(-1, embedding_dim)
+                    neg_targets = torch.masked_select(data["neg_targets"], mask_embed)
+                    neg_targets = neg_targets.view(-1, embedding_dim)
+                    # targets_classify = targets_classify.view(-1, max_labels)
+                    loss_embed = alpha * loss_func_embed(outputs["embed_wsd"], targets_embed) + \
+                                 (1 - alpha) * (1 - loss_func_embed(outputs["embed_wsd"], neg_targets))
+                    loss += loss_embed
+                    average_loss_embed += loss_embed
+                # Calculate loss for the frame identification embedding method
+                if "frameID" in output_layers and "frameID" in batch_layers:
                     mask_embed = torch.reshape(data["mask"], (data["mask"].shape[0], data["mask"].shape[1], 1))
                     targets_embed = torch.masked_select(data["targets_embed"], mask_embed)
                     targets_embed = targets_embed.view(-1, embedding_dim)
@@ -449,12 +465,12 @@ if __name__ == "__main__":
                     loss += loss_embed
                     average_loss_embed += loss_embed
                 # Calculate loss for the classification method
-                if "classify_wsd" in output_layers:
+                if "classify_wsd" in output_layers and "classify_wsd" in batch_layers:
                     targets_classify = torch.from_numpy(numpy.asarray(data["targets_classify"])[data["mask"]])
                     loss_classify = loss_func_classify(outputs["classify_wsd"], targets_classify)
                     loss += loss_classify
                     average_loss_classify += loss_classify
-                if "pos_tagger" in output_layers:
+                if "pos_tagger" in output_layers and "pos_tagger" in batch_layers:
                     if crf_layer is True:
                         mask_crf_pos = data["pos_mask"][:, :outputs["pos_tagger"].shape[1]]
                         targets_pos = data["targets_pos"][:, :outputs["pos_tagger"].shape[1]]
@@ -468,7 +484,7 @@ if __name__ == "__main__":
                         loss_pos = loss_func_pos(outputs_pos, targets_pos)
                     loss += loss_pos
                     average_loss_pos += loss_pos
-                if "ner" in output_layers:
+                if "ner" in output_layers and "ner" in batch_layers:
                     if crf_layer is True:
                         mask_crf_ner = data["ner_mask"][:, :outputs["ner"].shape[1]]
                         targets_ner = data["targets_ner"][:, :outputs["ner"].shape[1]]
@@ -623,25 +639,6 @@ if __name__ == "__main__":
                         print("Test classification accuracy: " + str(test_accuracy_classify))
                         print("Test pos tagging accuracy: " + str(test_pos_accuracy))
                         print("Test ner F1 score: " + str(test_n1_fscore))
-            for step, data in enumerate(trainloader_frameID):
-                model.train()
-                optimizer.zero_grad()
-                lus = numpy.asarray(data['lemmas']).transpose()[data["mask"]] # TODO: parametrize
-                frames = numpy.asarray(data['synsets']).transpose()[data["mask"]]
-                outputs = model(data, lus)
-                loss = 0.0
-                # Calculate loss for the context embedding method
-                if "embed_wsd" in output_layers:
-                    mask_embed = torch.reshape(data["mask"], (data["mask"].shape[0], data["mask"].shape[1], 1))
-                    targets_embed = torch.masked_select(data["targets_embed"], mask_embed)
-                    targets_embed = targets_embed.view(-1, embedding_dim)
-                    neg_targets = torch.masked_select(data["neg_targets"], mask_embed)
-                    neg_targets = neg_targets.view(-1, embedding_dim)
-                    # targets_classify = targets_classify.view(-1, max_labels)
-                    loss_embed = alpha * loss_func_embed(outputs["embed_wsd"], targets_embed) + \
-                                 (1 - alpha) * (1 - loss_func_embed(outputs["embed_wsd"], neg_targets))
-                    loss += loss_embed
-                    average_loss_embed += loss_embed
         print("Best context embedding accuracy on the test data: " + str(best_test_embed))
         print("Best WSD accuracy on the test data: " + str(best_test_classify))
         print("Best POS tagging accuracy on the test data: " + str(best_test_pos))

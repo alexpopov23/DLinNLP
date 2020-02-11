@@ -36,7 +36,7 @@ class ConcatDataLoader(torch.utils.data.DataLoader):
     def __len__(self):
         return sum(len(d._index_sampler) for d in self.dataloaders)
 
-'''Source: https://github.com/bomri/code-for-posts/tree/master/mtl-data-loading'''
+'''Modified from: https://github.com/bomri/code-for-posts/tree/master/mtl-data-loading'''
 class BatchSchedulerSampler(torch.utils.data.sampler.Sampler):
     """
     iterate over tasks and provide a random batch per task in each mini-batch
@@ -122,7 +122,7 @@ class Sample():
 class WSDataset(Dataset):
 
     def __init__(self, device, tsv_data, src2id, embeddings, embeddings_dim, embeddings_input, max_labels, lemma2synsets,
-                 single_softmax, known_synsets=None, pos_map=None, pos_filter=False):
+                 single_softmax, batch_layers, known_synsets=None, pos_map=None, pos_filter=False):
         # Our data has some pretty long sentences, so we will set a large max length
         # Alternatively, can throw them out or truncate them
         self.device = device
@@ -140,6 +140,7 @@ class WSDataset(Dataset):
         self.known_lemmas, self.known_pos, self.known_entity_tags = \
             sorted(self.known_lemmas), sorted(self.known_pos), sorted(self.known_entity_tags)
         self.single_softmax = single_softmax
+        self.batch_layers = batch_layers
         if self.single_softmax is True:
             if known_synsets is None:
                 self.known_synsets = {"UNKNOWN" : 0}
@@ -255,7 +256,8 @@ class WSDataset(Dataset):
                 "targets_ner": torch.tensor(targets_ner, dtype=torch.long).to(self.device),
                 "mask": torch.tensor(mask, dtype=torch.bool).to(self.device),
                 "pos_mask": torch.tensor(pos_mask, dtype=torch.bool).to(self.device),
-                "ner_mask": torch.tensor(ner_mask, dtype=torch.bool).to(self.device)}
+                "ner_mask": torch.tensor(ner_mask, dtype=torch.bool).to(self.device),
+                "batch_layers": self.batch_layers}
         return data
 
     def parse_tsv(self, dataset_path, max_length, pos_map=None, pos_filter=False):
