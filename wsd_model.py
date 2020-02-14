@@ -191,6 +191,26 @@ class WSDModel(nn.Module):
                 outputs["pos_tagger"] = self.dropout(self.pos_tags(X_pos))
         return outputs
 
+def embed_concepts(data, outputs, query, embedding_dim, loss_func, alpha):
+    mask_embed = torch.reshape(data["mask"], (data["mask"].shape[0], data["mask"].shape[1], 1))
+    targets_embed = torch.masked_select(data["targets_embed"], mask_embed)
+    targets_embed = targets_embed.view(-1, embedding_dim)
+    neg_targets = torch.masked_select(data["neg_targets"], mask_embed)
+    neg_targets = neg_targets.view(-1, embedding_dim)
+    # targets_classify = targets_classify.view(-1, max_labels)
+    loss_embed = alpha * loss_func(outputs[query], targets_embed) + \
+                 (1 - alpha) * (1 - loss_func(outputs[query], neg_targets))
+    return
+
+def classify_wsd():
+    return
+
+def pos_tagger():
+    return
+
+def ner():
+    return
+
 
 def calculate_accuracy_embedding(outputs, lemmas, gold_synsets, lemma2synsets, embeddings, src2id, pos_filter=True):
     matches, total = 0, 0
