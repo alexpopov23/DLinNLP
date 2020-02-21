@@ -64,11 +64,11 @@ def eval_loop(data_loader, known_lemmas, model, output_layers):
     for eval_data in data_loader:
         # lemmas = numpy.asarray(eval_data['lemmas_pos']).transpose()[eval_data["mask"]]
         if pos_filter is True:
-            lemmas = numpy.asarray(eval_data['lemmas_pos']).transpose()[eval_data["mask"]]
+            lemmas = numpy.asarray(eval_data['lemmas_pos']).transpose()[eval_data["mask"].cpu()]
         else:
-            lemmas = numpy.asarray(eval_data['lemmas']).transpose()[eval_data["mask"]]
+            lemmas = numpy.asarray(eval_data['lemmas']).transpose()[eval_data["mask"].cpu()]
         default_disambiguations = disambiguate_by_default(lemmas, known_lemmas)
-        synsets = numpy.asarray(eval_data['synsets']).transpose()[eval_data["mask"]]
+        synsets = numpy.asarray(eval_data['synsets']).transpose()[eval_data["mask"].cpu()]
         # pos = numpy.asarray(eval_data['pos']).transpose()[eval_data["mask"]]
         # targets_classify = torch.from_numpy(numpy.asarray(eval_data["targets_classify"])[eval_data["mask"]])
         # targets_pos = torch.from_numpy(numpy.asarray(eval_data["targets_pos"])[eval_data["pos_mask"]])
@@ -108,8 +108,8 @@ def eval_loop(data_loader, known_lemmas, model, output_layers):
                                                                 mask_crf_pos,
                                                                 targets_pos)
             else:
-                targets_pos = torch.from_numpy(numpy.asarray(eval_data["targets_pos"])[eval_data["pos_mask"]])
-                mask_pos = eval_data["pos_mask"][:, :outputs["pos_tagger"].shape[1]]
+                targets_pos = torch.from_numpy(numpy.asarray(eval_data["targets_pos"])[eval_data["pos_mask"].cpu()])
+                mask_pos = eval_data["pos_mask"].cpu()[:, :outputs["pos_tagger"].shape[1]]
                 mask_pos = torch.reshape(mask_pos, (mask_pos.shape[0], mask_pos.shape[1], 1))
                 outputs_pos = torch.masked_select(outputs["pos_tagger"], mask_pos).view(-1, len(trainset.known_pos))
                 matches_pos, total_pos = calculate_accuracy_classification(outputs_pos, targets_pos)
@@ -119,19 +119,19 @@ def eval_loop(data_loader, known_lemmas, model, output_layers):
         if "ner" in output_layers:
             outputs_ner = outputs["ner"]
             if crf_layer is True:
-                mask_crf_ner = eval_data["ner_mask"][:, :outputs["ner"].shape[1]]
+                mask_crf_ner = eval_data["ner_mask"].cpu()[:, :outputs["ner"].shape[1]]
                 targets_ner = eval_data["targets_ner"][:, :outputs["ner"].shape[1]]
-                outputs_ner = loss_func_ner.decode(outputs_ner, mask=mask_crf_ner)
+                outputs_ner = loss_func_ner.decode(outputs_ner.cpu(), mask=mask_crf_ner.cpu())
             else:
-                targets_ner = torch.from_numpy(numpy.asarray(eval_data["targets_ner"])[eval_data["ner_mask"]])
+                targets_ner = torch.from_numpy(numpy.asarray(eval_data["targets_ner"])[eval_data["ner_mask"].cpu()])
                 outputs_ner = outputs["ner"]
                 outputs_ner = torch.argmax(outputs_ner, dim=2)
                 targets_ner = slice_and_pad(targets_ner, eval_data["length"])
                 outputs_ner = outputs_ner.numpy()
             f1_ner, [tps, fps, fns], _ = calculate_f1_ner(outputs_ner,
-                                                          targets_ner.numpy(),
+                                                          targets_ner.cpu().numpy(),
                                                           eval_data["length"],
-                                         trainset.known_entity_tags)
+                                                          trainset.known_entity_tags)
             tps_all += tps
             fps_all += fps
             fns_all += fns
@@ -213,7 +213,8 @@ if __name__ == "__main__":
     # Figure out what device to run the network on
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print("Device is :" + str(device))
-    print(torch.cuda.is_available())
+    use_cuda = torch.cuda.is_available()
+    print(use_cuda)
 
     # Get the embeddings and lexicon
     args = parser.parse_args()
@@ -351,11 +352,11 @@ if __name__ == "__main__":
                 optimizer.zero_grad()
                 # lemmas = numpy.asarray(data['lemmas_pos']).transpose()[data["mask"]]
                 if pos_filter is True:
-                    lemmas = numpy.asarray(data['lemmas_pos']).transpose()[data["mask"]]
+                    lemmas = numpy.asarray(data['lemmas_pos']).transpose()[data["mask"].cpu()]
                 else:
-                    lemmas = numpy.asarray(data['lemmas']).transpose()[data["mask"]] # TODO: parametrize
+                    lemmas = numpy.asarray(data['lemmas']).transpose()[data["mask"].cpu()] # TODO: parametrize
                 default_disambiguations = disambiguate_by_default(lemmas, trainset.known_lemmas)
-                synsets = numpy.asarray(data['synsets']).transpose()[data["mask"]]
+                synsets = numpy.asarray(data['synsets']).transpose()[data["mask"].cpu()]
                 # lengths_labels = numpy.asarray(data["lengths_labels"])[data["mask"]]
                 # outputs = model(data["inputs"], data["length"], data["mask"], data["pos_mask"], lemmas)
                 outputs = model(data, lemmas)
@@ -374,7 +375,7 @@ if __name__ == "__main__":
                     average_loss_embed += loss_embed
                 # Calculate loss for the classification method
                 if "classify_wsd" in output_layers:
-                    targets_classify = torch.from_numpy(numpy.asarray(data["targets_classify"])[data["mask"]])
+                    targets_classify = torch.from_numpy(numpy.asarray(data["targets_classify"])[data["mask"].cpu()])
                     loss_classify = loss_func_classify(outputs["classify_wsd"], targets_classify)
                     loss += loss_classify
                     average_loss_classify += loss_classify
@@ -385,7 +386,7 @@ if __name__ == "__main__":
                         loss_pos = loss_func_pos(outputs["pos_tagger"], targets_pos, mask_crf_pos, reduction="mean")
                         loss_pos *= (-1.0 if crf_layer is True else 1.0)
                     else:
-                        targets_pos = torch.from_numpy(numpy.asarray(data["targets_pos"])[data["pos_mask"]])
+                        targets_pos = torch.from_numpy(numpy.asarray(data["targets_pos"])[data["pos_mask"].cpu()])
                         mask_pos = data["pos_mask"][:, :outputs["pos_tagger"].shape[1]]
                         mask_pos = torch.reshape(mask_pos, (mask_pos.shape[0], mask_pos.shape[1], 1))
                         outputs_pos = torch.masked_select(outputs["pos_tagger"], mask_pos).view(-1, len(trainset.known_pos))
@@ -396,10 +397,10 @@ if __name__ == "__main__":
                     if crf_layer is True:
                         mask_crf_ner = data["ner_mask"][:, :outputs["ner"].shape[1]]
                         targets_ner = data["targets_ner"][:, :outputs["ner"].shape[1]]
-                        loss_ner = loss_func_ner(outputs["ner"], targets_ner, mask_crf_ner, reduction="mean")
+                        loss_ner = loss_func_ner(outputs["ner"].cpu(), targets_ner.cpu(), mask_crf_ner.cpu(), reduction="mean")
                         loss_ner *= (-1.0 if crf_layer is True else 1.0)
                     else:
-                        targets_ner = torch.from_numpy(numpy.asarray(data["targets_ner"])[data["ner_mask"]])
+                        targets_ner = torch.from_numpy(numpy.asarray(data["targets_ner"])[data["ner_mask"].cpu()])
                         mask_ner = data["ner_mask"][:, :outputs["ner"].shape[1]]
                         # mask_ner = mask_ner[:, :outputs["ner"].shape[1]]
                         mask_ner = torch.reshape(mask_ner, (mask_ner.shape[0], mask_ner.shape[1], 1))
@@ -463,10 +464,10 @@ if __name__ == "__main__":
                     if "ner" in output_layers:
                         if crf_layer is True:
                             matches_ner, total_ner = calculate_accuracy_crf(loss_func_ner,
-                                                                            outputs["ner"],
-                                                                            mask_crf_ner,
-                                                                            targets_ner)
-                            outputs_ner = loss_func_ner.decode(outputs["ner"], mask=mask_crf_ner)
+                                                                            outputs["ner"].cpu(),
+                                                                            mask_crf_ner.cpu(),
+                                                                            targets_ner.cpu())
+                            outputs_ner = loss_func_ner.decode(outputs["ner"].cpu(), mask=mask_crf_ner.cpu())
                         else:
                             matches_ner, total_ner = calculate_accuracy_classification(outputs_ner, targets_ner)
                             outputs_ner = torch.argmax(outputs_ner, dim=1)
@@ -474,7 +475,7 @@ if __name__ == "__main__":
                             targets_ner = slice_and_pad(targets_ner, data["length"])
                             outputs_ner = outputs_ner.numpy()
                         f1_ner, _, _ = calculate_f1_ner(outputs_ner,
-                                                        targets_ner.numpy(),
+                                                        targets_ner.cpu().numpy(),
                                                         data["length"],
                                                         trainset.known_entity_tags)
                         train_accuracy_ner = matches_ner * 1.0 / total_ner
