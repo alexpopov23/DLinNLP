@@ -125,11 +125,11 @@ class WSDModel(nn.Module):
             #         outputs_emb.append(output)
             #     outputs["embed_wsd"] = outputs_emb
             # else:
-            if layer == "embed_wsd" and layer in data.batch_layers:
+            if layer == "embed_wsd" and layer in data["batch_layers"][0]:
                 outputs["embed_wsd"] = self.dropout(self.output_emb(self.emb_relu(X_wsd)))
-            if layer == "embed_frameID" and layer in data.batch_layers:
-                outputs["embed_frameID"] = self.dropout(self.output_emb_frames(self.emb_relu_frames(X_wsd)))
-            if layer == "classify_wsd" and layer in data.batch_layers:
+            if layer == "embed_frameID" and layer in data["batch_layers"][0]:
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        outputs["embed_frameID"] = self.dropout(self.output_emb_frames(self.emb_relu_frames(X_wsd)))
+            if layer == "classify_wsd" and layer in data["batch_layers"][0]:
                 if len(self.synsets2id) > 0:
                     outputs["classify_wsd"] = self.dropout(self.output_classify(X_wsd))
                 else:
@@ -140,11 +140,11 @@ class WSDModel(nn.Module):
                         outputs_classif.append(output_classif)
                     outputs_classif = pad_sequence(outputs_classif, batch_first=True, padding_value=-100)
                     outputs["classify_wsd"] = outputs_classif
-            if layer == "pos_tagger" and layer in data.batch_layers:
+            if layer == "pos_tagger" and layer in data["batch_layers"][0]:
                 outputs["pos_tagger"] = pad_sequence(self.dropout(self.pos_tags(X)),
                                                      batch_first=True,
                                                      padding_value=-100)
-            if layer == "ner" and layer in data.batch_layers:
+            if layer == "ner" and layer in data["batch_layers"][0]:
                 outputs["ner"] = pad_sequence(self.dropout(self.ner(X)),
                                               batch_first=True,
                                               padding_value=-100)

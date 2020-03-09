@@ -62,11 +62,11 @@ def eval_loop(data_loader, known_lemmas, model, output_layers):
     matches_classify_all, total_classify_all = 0, 0
     matches_pos_all, total_pos_all = 0, 0
     tps_all, fps_all, fns_all = 0, 0, 0
-    accuracy_embed_wsd, accuracY_embed_frameID, accuracy_classify, accuracy_pos, f1_ner = 0.0, 0.0, 0.0, 0.0
+    accuracy_embed_wsd, accuracy_embed_frameID, accuracy_classify, accuracy_pos, f1_ner = 0.0, 0.0, 0.0, 0.0, 0.0
     log = "LEMMA\tALL OPTIONS\tSELECTED SENSE\tGOLD SENSES\n"
     for eval_data in data_loader:
         # lemmas = numpy.asarray(eval_data['lemmas_pos']).transpose()[eval_data["mask"]]
-        batch_layers = eval_data.batch_layers[0][0]
+        batch_layers = eval_data["batch_layers"][0]
         if pos_filter is True:
             lemmas = numpy.asarray(eval_data['lemmas_pos']).transpose()[eval_data["mask"]]
         else:
@@ -89,7 +89,7 @@ def eval_loop(data_loader, known_lemmas, model, output_layers):
             matches_embed_wsd_all += matches_embed_wsd
             total_embed_wsd_all += total_embed_wsd
         if "frameID" in output_layers and "frameID" in batch_layers:
-            matches_embed_frameID, total_embed_frameID = calculate_accuracy_embedding(outputs["embed_wsd"],
+            matches_embed_frameID, total_embed_frameID = calculate_accuracy_embedding(outputs["embed_frameID"],
                                                                       lemmas,
                                                                       synsets,
                                                                       lemma2synsets,
@@ -286,8 +286,8 @@ if __name__ == "__main__":
         split_dataset = True
     if combine_WN_FN is True:
         wsd_batch_layers = copy.copy(output_layers)
-        wsd_batch_layers.remove("frameID")
-        frame_batch_layers = ["frameID"]
+        wsd_batch_layers.remove("embed_frameID")
+        frame_batch_layers = ["embed_frameID"]
     trainset = WSDataset(device, train_path, src2id, embeddings, embedding_dim, embeddings_input, max_labels,
                          lemma2synsets, single_softmax, wsd_batch_layers, pos_map=f_pos_map, pos_filter=pos_filter)
     known_pos = trainset.known_pos
@@ -432,8 +432,8 @@ if __name__ == "__main__":
         print(args)
         least_loss = 0.0
         best_accuracy_embed_wsd, best_accuracy_embed_frameID, best_accuracy_classify, best_accuracy_pos, best_f1_ner = \
-            0.0, 0.0, 0.0, 0.0
-        best_test_embed, best_test_frameID, best_test_classify, best_test_pos, best_test_ner = 0.0, 0.0, 0.0, 0.0
+            0.0, 0.0, 0.0, 0.0, 0.0
+        best_test_embed_wsd, best_test_frameID, best_test_classify, best_test_pos, best_test_ner = 0.0, 0.0, 0.0, 0.0, 0.0
         eval_at = 100
         for epoch in range(epochs):
             print("***** Start of epoch " + str(epoch) + " *****")
@@ -444,7 +444,7 @@ if __name__ == "__main__":
                 model.train()
                 optimizer.zero_grad()
                 # lemmas = numpy.asarray(data['lemmas_pos']).transpose()[data["mask"]]
-                batch_layers = data.batch_layers[0][0]
+                batch_layers = data["batch_layers"][0]
                 if pos_filter is True:
                     lemmas = numpy.asarray(data['lemmas_pos']).transpose()[data["mask"]]
                 else:
@@ -476,8 +476,8 @@ if __name__ == "__main__":
                     neg_targets = torch.masked_select(data["neg_targets"], mask_embed)
                     neg_targets = neg_targets.view(-1, embedding_dim)
                     # targets_classify = targets_classify.view(-1, max_labels)
-                    loss_embed = alpha * loss_func_embed(outputs["embed_wsd"], targets_embed) + \
-                                 (1 - alpha) * (1 - loss_func_embed(outputs["embed_wsd"], neg_targets))
+                    loss_embed = alpha * loss_func_embed(outputs["embed_frameID"], targets_embed) + \
+                                 (1 - alpha) * (1 - loss_func_embed(outputs["embed_frameID"], neg_targets))
                     loss += loss_embed
                     average_loss_embed_frameID += loss_embed
                     count_embed_frameID += 1
@@ -538,7 +538,7 @@ if __name__ == "__main__":
                         # print("Training embedding accuracy: " + str(train_accuracy_embed))
                         # average_loss_embed /= (eval_at if step != 0 else 1)
                         average_loss_embed_wsd /= count_embed_wsd
-                        print("Average embedding loss (training): " + str(average_loss_embed.detach().numpy()))
+                        print("Average embedding loss (training): " + str(average_loss_embed_wsd.detach().numpy()))
                         average_loss_overall += average_loss_embed_wsd.detach().numpy()
                     if "classify_wsd" in output_layers:
                         # matches_classify, total_classify, log = calculate_accuracy_classification_wsd(
@@ -601,12 +601,12 @@ if __name__ == "__main__":
                         print("Average ner tagger loss (training): " + str(average_loss_ner.detach().numpy()))
                         average_loss_overall += average_loss_ner.detach().numpy()
                     print("Average overall loss (training): " + str(average_loss_overall))
-                    average_loss_embed_wsd, average_loss_embed_frameID, average_loss_classif, average_loss_poss, \
-                    average_loss_ner, average_loss_overall = 0.0, 0.0, 0.0, 0.0, 0.0
+                    average_loss_embed_wsd, average_loss_embed_frameID, average_loss_classif, average_loss_pos, \
+                    average_loss_ner, average_loss_overall = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
 
                     # Loop over the dev dataset
                     dev_accuracy_embed_wsd, dev_accuracy_embed_frameID, dev_accuracy_classify, dev_accuracy_pos, dev_f1_ner,\
-                    dev_log = eval_loop(devloader, trainset.known_lemmas, model, output_layers)
+                    dev_log = eval_loop(devloader, known_lemmas, model, output_layers)
                     print("Dev embedding accuracy (WSD): " + str(dev_accuracy_embed_wsd))
                     print("Dev embedding accuracy (frameID): " + str(dev_accuracy_embed_frameID))
                     print("Dev classification accuracy: " + str(dev_accuracy_classify))
@@ -658,7 +658,7 @@ if __name__ == "__main__":
                     if best_result is True:
                         # Eval on the test dataset as well
                         test_accuracy_embed_wsd, test_accuracy_frameID, test_accuracy_classify, test_pos_accuracy, \
-                        test_n1_fscore, test_log = eval_loop(testloader, trainset.known_lemmas, model, output_layers)
+                        test_n1_fscore, test_log = eval_loop(testloader, known_lemmas, model, output_layers)
                         with open(os.path.join(save_path, "eval_log.csv"), "w") as f:
                             f.write(test_log)
                         best_test_embed_wsd = test_accuracy_embed_wsd \
