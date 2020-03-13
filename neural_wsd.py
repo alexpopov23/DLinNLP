@@ -12,7 +12,7 @@ from torch.utils.data.sampler import SubsetRandomSampler
 from torch.utils.data.dataset import ConcatDataset
 
 from auxiliary import Logger
-from data_ops import WSDataset, BatchSchedulerSampler, load_embeddings, get_wordnet_lexicon
+from data_ops import WSDataset, BatchSchedulerSampler, load_embeddings, get_wordnet_lexicon, get_framenet_lexicon
 from wsd_model import WSDModel, calculate_accuracy_embedding, calculate_accuracy_classification, \
     calculate_accuracy_classification_wsd, calculate_accuracy_crf, calculate_f1_ner, get_granular_f1
 
@@ -72,7 +72,7 @@ def eval_loop(data_loader, known_lemmas, model, output_layers):
         else:
             lemmas = numpy.asarray(eval_data['lemmas']).transpose()[eval_data["mask"]]
         default_disambiguations = disambiguate_by_default(lemmas, known_lemmas)
-        synsets = numpy.asarray(eval_data['synsets']).transpose()[eval_data["mask"]]
+        senses = numpy.asarray(eval_data['senses']).transpose()[eval_data["mask"]]
         # pos = numpy.asarray(eval_data['pos']).transpose()[eval_data["mask"]]
         # targets_classify = torch.from_numpy(numpy.asarray(eval_data["targets_classify"])[eval_data["mask"]])
         # targets_pos = torch.from_numpy(numpy.asarray(eval_data["targets_pos"])[eval_data["pos_mask"]])
@@ -81,21 +81,21 @@ def eval_loop(data_loader, known_lemmas, model, output_layers):
         if "embed_wsd" in output_layers and "embed_wsd" in batch_layers:
             matches_embed_wsd, total_embed_wsd = calculate_accuracy_embedding(outputs["embed_wsd"],
                                                                               lemmas,
-                                                                              synsets,
+                                                                              senses,
                                                                               lemma2synsets,
                                                                               embeddings,
                                                                               src2id,
                                                                               pos_filter=True)
             matches_embed_wsd_all += matches_embed_wsd
             total_embed_wsd_all += total_embed_wsd
-        if "frameID" in output_layers and "frameID" in batch_layers:
+        if "embed_frameID" in output_layers and "embed_frameID" in batch_layers:
             matches_embed_frameID, total_embed_frameID = calculate_accuracy_embedding(outputs["embed_frameID"],
-                                                                      lemmas,
-                                                                      synsets,
-                                                                      lemma2synsets,
-                                                                      embeddings,
-                                                                      src2id,
-                                                                      pos_filter=True)
+                                                                                      lemmas,
+                                                                                      senses,
+                                                                                      lu2frames,
+                                                                                      embeddings,
+                                                                                      src2id,
+                                                                                      pos_filter=True)
             matches_embed_frameID_all += matches_embed_frameID
             total_embed_frameID_all += total_embed_frameID
         if "classify_wsd" in output_layers and "classify_wsd" in batch_layers:
@@ -106,7 +106,7 @@ def eval_loop(data_loader, known_lemmas, model, output_layers):
                 default_disambiguations,
                 lemmas,
                 known_lemmas,
-                synsets,
+                senses,
                 lemma2synsets,
                 synset2id,
                 single_softmax)
@@ -145,7 +145,7 @@ def eval_loop(data_loader, known_lemmas, model, output_layers):
             f1_ner, [tps, fps, fns], _ = calculate_f1_ner(outputs_ner,
                                                           targets_ner.numpy(),
                                                           eval_data["length"],
-                                         trainset.known_entity_tags)
+                                                          trainset.known_entity_tags)
             tps_all += tps
             fps_all += fps
             fns_all += fns
@@ -202,7 +202,9 @@ if __name__ == "__main__":
     parser.add_argument('-learning_rate', dest='learning_rate', required=False, default=0.2,
                         help='How fast the network should learn.')
     parser.add_argument('-lexicon_path', dest='lexicon_path', required=False,
-                        help='The path to the location of the lexicon file.')
+                        help='The path to the location of the lexicon file (WordNet).')
+    parser.add_argument('-lexicon_fn_path', dest='lexicon_fn_path', required=False,
+                        help='The path to the location of the lexicon file (FrameNet).')
     parser.add_argument('-max_seq_length', dest='max_seq_length', required=False, default=63,
                         help='Maximum length of a sentence to be passed to the network (the rest is cut off).')
     parser.add_argument('-mode', dest='mode', required=False, default="train",
@@ -249,11 +251,14 @@ if __name__ == "__main__":
     embedding_dim = embeddings.shape[1]
     embeddings_input = args.embeddings_input
     lexicon_path = args.lexicon_path
+    lexicon_fn_path = args.lexicon_fn_path
     pos_filter = True if args.pos_filter == "True" else False
     if lexicon_path is not None:
         lemma2synsets, max_labels = get_wordnet_lexicon(lexicon_path, pos_filter)
     else:
         lemma2synsets, max_labels = {}, 0
+    if lexicon_fn_path is not None:
+        lu2frames = get_framenet_lexicon(lexicon_fn_path)
     crf_layer = True if args.crf_layer == "True" else False
     # if crf_layer is True:
     #     single_softmax = True
@@ -291,7 +296,7 @@ if __name__ == "__main__":
     trainset = WSDataset(device, train_path, src2id, embeddings, embedding_dim, embeddings_input, max_labels,
                          lemma2synsets, single_softmax, wsd_batch_layers, pos_map=f_pos_map, pos_filter=pos_filter)
     known_pos = trainset.known_pos
-    known_lemmas = trainset.known_lemmas
+    known_lemmas = trainset.known_lus
     known_entity_tags = trainset.known_entity_tags
     # if combine_WN_FN is True:
     #     trainset_frameID = WSDataset(device, frame_path_train, src2id, embeddings, embedding_dim, embeddings_input, max_labels,
@@ -304,7 +309,7 @@ if __name__ == "__main__":
     #     # devloader_frameID = torch.utils.data.DataLoader(devset_frameID, batch_size=batch_size, shuffle=False)
     #     # testloader_frameID = torch.utils.data.DataLoader(testset_frameID, batch_size=batch_size, shuffle=False)
     if single_softmax is True:
-        synset2id = trainset.known_synsets
+        synset2id = trainset.known_senses
     else:
         synset2id = {}
 
@@ -334,34 +339,38 @@ if __name__ == "__main__":
                            lemma2synsets, single_softmax, wsd_batch_layers, synset2id, pos_filter=pos_filter)
         testset = WSDataset(device, test_path, src2id, embeddings, embedding_dim, embeddings_input, max_labels,
                             lemma2synsets, single_softmax, wsd_batch_layers, synset2id, pos_filter=pos_filter)
+        devloader = torch.utils.data.DataLoader(dataset=devset, batch_size=batch_size, shuffle=False)
+        testloader = torch.utils.data.DataLoader(dataset=testset, batch_size=batch_size, shuffle=False)
         if combine_WN_FN is True:
             trainset_frameID = WSDataset(device, frame_path_train, src2id, embeddings, embedding_dim, embeddings_input,
-                                         max_labels, lemma2synsets, single_softmax, frame_batch_layers,
-                                         pos_map=f_pos_map, pos_filter=False)
-            devset_frameID = WSDataset(device, frame_path_dev, src2id, embeddings, embedding_dim, embeddings_input,
-                                       max_labels, lemma2synsets, single_softmax, frame_batch_layers,
-                                       pos_map=f_pos_map, pos_filter=False)
-            testset_frameID = WSDataset(device, frame_path_test, src2id, embeddings, embedding_dim, embeddings_input,
-                                        max_labels, lemma2synsets, single_softmax, frame_batch_layers,
-                                        pos_map=f_pos_map, pos_filter=False)
+                                         max_labels, lu2frames, single_softmax, frame_batch_layers, pos_map=f_pos_map,
+                                         pos_filter=True)
             trainset = ConcatDataset([trainset, trainset_frameID])
-            devset = ConcatDataset([devset, devset_frameID])
-            testset = ConcatDataset([testset, testset_frameID])
+            devset_frameID = WSDataset(device, frame_path_dev, src2id, embeddings, embedding_dim, embeddings_input,
+                                       max_labels, lu2frames, single_softmax, frame_batch_layers, pos_map=f_pos_map,
+                                       pos_filter=True)
+            testset_frameID = WSDataset(device, frame_path_test, src2id, embeddings, embedding_dim, embeddings_input,
+                                        max_labels, lu2frames, single_softmax, frame_batch_layers, pos_map=f_pos_map,
+                                        pos_filter=True)
+            # devset = ConcatDataset([devset, devset_frameID])
+            # testset = ConcatDataset([testset, testset_frameID])
             trainloader = torch.utils.data.DataLoader(dataset=trainset,
                                                       sampler=BatchSchedulerSampler(dataset=trainset,
                                                                                     batch_size=batch_size),
                                                       batch_size=batch_size,
                                                       shuffle=False)
-            devloader = torch.utils.data.DataLoader(dataset=devset,
-                                                    sampler=BatchSchedulerSampler(dataset=devset,
-                                                                                  batch_size=batch_size),
-                                                    batch_size=batch_size,
-                                                    shuffle=False)
-            testloader = torch.utils.data.DataLoader(dataset=testset,
-                                                     sampler=BatchSchedulerSampler(dataset=testset,
-                                                                                   batch_size=batch_size),
-                                                     batch_size=batch_size,
-                                                     shuffle=False)
+            # devloader = torch.utils.data.DataLoader(dataset=devset,
+            #                                         sampler=BatchSchedulerSampler(dataset=devset,
+            #                                                                       batch_size=batch_size),
+            #                                         batch_size=batch_size,
+            #                                         shuffle=False)
+            devloader_frameID = torch.utils.data.DataLoader(dataset=devset_frameID, batch_size=batch_size, shuffle=False)
+            # testloader = torch.utils.data.DataLoader(dataset=testset,
+            #                                          sampler=BatchSchedulerSampler(dataset=testset,
+            #                                                                        batch_size=batch_size),
+            #                                          batch_size=batch_size,
+            #                                          shuffle=False)
+            testloader_frameID = torch.utils.data.DataLoader(dataset=testset_frameID, batch_size=batch_size, shuffle=False)
         else:
             trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True)
             devloader = torch.utils.data.DataLoader(devset, batch_size=batch_size, shuffle=False)
@@ -434,7 +443,7 @@ if __name__ == "__main__":
         best_accuracy_embed_wsd, best_accuracy_embed_frameID, best_accuracy_classify, best_accuracy_pos, best_f1_ner = \
             0.0, 0.0, 0.0, 0.0, 0.0
         best_test_embed_wsd, best_test_frameID, best_test_classify, best_test_pos, best_test_ner = 0.0, 0.0, 0.0, 0.0, 0.0
-        eval_at = 100
+        eval_at = 10
         for epoch in range(epochs):
             print("***** Start of epoch " + str(epoch) + " *****")
             average_loss_embed_wsd, average_loss_embed_frameID, average_loss_classify, average_loss_pos, \
@@ -450,13 +459,13 @@ if __name__ == "__main__":
                 else:
                     lemmas = numpy.asarray(data['lemmas']).transpose()[data["mask"]] # TODO: parametrize
                 default_disambiguations = disambiguate_by_default(lemmas, known_lemmas)
-                synsets = numpy.asarray(data['synsets']).transpose()[data["mask"]]
+                senses = numpy.asarray(data['senses']).transpose()[data["mask"]]
                 # lengths_labels = numpy.asarray(data["lengths_labels"])[data["mask"]]
                 # outputs = model(data["inputs"], data["length"], data["mask"], data["pos_mask"], lemmas)
                 outputs = model(data, lemmas)
                 loss = 0.0
                 # Calculate loss for the context embedding method
-                if "embed_wsd" in output_layers and "embed_wsd" in batch_layers:
+                if "embed_wsd" in output_layers and "embed_wsd" in batch_layers[0]:
                     mask_embed = torch.reshape(data["mask"], (data["mask"].shape[0], data["mask"].shape[1], 1))
                     targets_embed = torch.masked_select(data["targets_embed"], mask_embed)
                     targets_embed = targets_embed.view(-1, embedding_dim)
@@ -469,7 +478,7 @@ if __name__ == "__main__":
                     average_loss_embed_wsd += loss_embed
                     count_embed_wsd += 1
                 # Calculate loss for the frame identification embedding method
-                if "frameID" in output_layers and "frameID" in batch_layers:
+                if "embed_frameID" in output_layers and "embed_frameID" in batch_layers[0]:
                     mask_embed = torch.reshape(data["mask"], (data["mask"].shape[0], data["mask"].shape[1], 1))
                     targets_embed = torch.masked_select(data["targets_embed"], mask_embed)
                     targets_embed = targets_embed.view(-1, embedding_dim)
@@ -482,13 +491,13 @@ if __name__ == "__main__":
                     average_loss_embed_frameID += loss_embed
                     count_embed_frameID += 1
                 # Calculate loss for the classification method
-                if "classify_wsd" in output_layers and "classify_wsd" in batch_layers:
+                if "classify_wsd" in output_layers and "classify_wsd" in batch_layers[0]:
                     targets_classify = torch.from_numpy(numpy.asarray(data["targets_classify"])[data["mask"]])
                     loss_classify = loss_func_classify(outputs["classify_wsd"], targets_classify)
                     loss += loss_classify
                     average_loss_classify += loss_classify
                     count_classify += 1
-                if "pos_tagger" in output_layers and "pos_tagger" in batch_layers:
+                if "pos_tagger" in output_layers and "pos_tagger" in batch_layers[0]:
                     if crf_layer is True:
                         mask_crf_pos = data["pos_mask"][:, :outputs["pos_tagger"].shape[1]]
                         targets_pos = data["targets_pos"][:, :outputs["pos_tagger"].shape[1]]
@@ -503,7 +512,7 @@ if __name__ == "__main__":
                     loss += loss_pos
                     average_loss_pos += loss_pos
                     count_pos += 1
-                if "ner" in output_layers and "ner" in batch_layers:
+                if "ner" in output_layers and "ner" in batch_layers[0]:
                     if crf_layer is True:
                         mask_crf_ner = data["ner_mask"][:, :outputs["ner"].shape[1]]
                         targets_ner = data["targets_ner"][:, :outputs["ner"].shape[1]]
@@ -526,7 +535,7 @@ if __name__ == "__main__":
                 if step % eval_at == 0:
                     model.eval()
                     print("Step " + str(step))
-                    if "embed_wsd" in output_layers:
+                    if "embed_wsd" in output_layers and count_embed_wsd > 0:
                         # matches_embed, total_embed = calculate_accuracy_embedding(outputs["embed_wsd"],
                         #                                                           lemmas,
                         #                                                           synsets,
@@ -540,6 +549,10 @@ if __name__ == "__main__":
                         average_loss_embed_wsd /= count_embed_wsd
                         print("Average embedding loss (training): " + str(average_loss_embed_wsd.detach().numpy()))
                         average_loss_overall += average_loss_embed_wsd.detach().numpy()
+                    if "embed_frameID" in output_layers and count_embed_frameID > 0:
+                        average_loss_embed_frameID /= count_embed_frameID
+                        print("Average frameID loss (training): " + str(average_loss_embed_frameID.detach().numpy()))
+                        average_loss_overall += average_loss_embed_frameID.detach().numpy()
                     if "classify_wsd" in output_layers:
                         # matches_classify, total_classify, log = calculate_accuracy_classification_wsd(
                         #         outputs["classify_wsd"].detach().numpy(),
@@ -605,8 +618,13 @@ if __name__ == "__main__":
                     average_loss_ner, average_loss_overall = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
 
                     # Loop over the dev dataset
-                    dev_accuracy_embed_wsd, dev_accuracy_embed_frameID, dev_accuracy_classify, dev_accuracy_pos, dev_f1_ner,\
-                    dev_log = eval_loop(devloader, known_lemmas, model, output_layers)
+                    if combine_WN_FN is True:
+                        dev_accuracy_embed_wsd, _, dev_accuracy_classify, dev_accuracy_pos, dev_f1_ner, _ = \
+                            eval_loop(devloader, known_lemmas, model, output_layers)
+                        _, dev_accuracy_embed_frameID, _, _, _, _ = eval_loop(devloader_frameID, known_lemmas, model, output_layers)
+                    else:
+                        dev_accuracy_embed_wsd, dev_accuracy_embed_frameID, dev_accuracy_classify, dev_accuracy_pos, dev_f1_ner,\
+                        dev_log = eval_loop(devloader, known_lemmas, model, output_layers)
                     print("Dev embedding accuracy (WSD): " + str(dev_accuracy_embed_wsd))
                     print("Dev embedding accuracy (frameID): " + str(dev_accuracy_embed_frameID))
                     print("Dev classification accuracy: " + str(dev_accuracy_classify))
@@ -657,8 +675,13 @@ if __name__ == "__main__":
                         best_result = True
                     if best_result is True:
                         # Eval on the test dataset as well
-                        test_accuracy_embed_wsd, test_accuracy_frameID, test_accuracy_classify, test_pos_accuracy, \
-                        test_n1_fscore, test_log = eval_loop(testloader, known_lemmas, model, output_layers)
+                        if combine_WN_FN is True:
+                            test_accuracy_embed_wsd, _, test_accuracy_classify, test_pos_accuracy, test_n1_fscore, \
+                            test_log = eval_loop(testloader, known_lemmas, model, output_layers)
+                            _, test_accuracy_frameID, _, _, _, _ = eval_loop(testloader_frameID, known_lemmas, model, output_layers)
+                        else:
+                            test_accuracy_embed_wsd, test_accuracy_frameID, test_accuracy_classify, test_pos_accuracy, \
+                            test_n1_fscore, test_log = eval_loop(testloader, known_lemmas, model, output_layers)
                         with open(os.path.join(save_path, "eval_log.csv"), "w") as f:
                             f.write(test_log)
                         best_test_embed_wsd = test_accuracy_embed_wsd \
@@ -676,7 +699,8 @@ if __name__ == "__main__":
                         print("Test classification accuracy: " + str(test_accuracy_classify))
                         print("Test pos tagging accuracy: " + str(test_pos_accuracy))
                         print("Test ner F1 score: " + str(test_n1_fscore))
-        print("Best context embedding accuracy on the test data: " + str(best_test_embed))
+        print("Best context embedding accuracy on the test data: " + str(best_test_embed_wsd))
+        print("Best frameID accuracy on the test data: " + str(best_test_frameID))
         print("Best WSD accuracy on the test data: " + str(best_test_classify))
         print("Best POS tagging accuracy on the test data: " + str(best_test_pos))
         print("Best F1-score on the test data: " + str(best_test_ner))
