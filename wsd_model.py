@@ -89,6 +89,7 @@ class WSDModel(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, data, lemmas, source_ids=None):
+        batch_layers = [layers[0] for layers in data['batch_layers']]
         if self.use_flair is True:
             X = data["sentence"]
             X = [Sentence(sent) for sent in X]
@@ -115,21 +116,11 @@ class WSDModel(nn.Module):
         X_wsd = X_wsd.view(-1, 2 * self.hidden_dim)  # shape is [num_labels, 2*hidden_dim]
         outputs = {}
         for layer in self.output_layers:
-            # if self.combine_WN_FN is True:
-            #     outputs_emb = []
-            #     for i, x in enumerate(torch.unbind(X_wsd)):
-            #         if source_ids[i] == "WSD":
-            #             output = self.dropout(self.output_emb(self.emb_relu(x)))
-            #         elif source_ids[i] == "FrameID":
-            #             output = self.dropout(self.output_emb_frames(self.emb_relu_frames(x)))
-            #         outputs_emb.append(output)
-            #     outputs["embed_wsd"] = outputs_emb
-            # else:
-            if layer == "embed_wsd" and layer in data["batch_layers"][0]:
+            if layer == "embed_wsd" and layer in batch_layers:
                 outputs["embed_wsd"] = self.dropout(self.output_emb(self.emb_relu(X_wsd)))
-            if layer == "embed_frameID" and layer in data["batch_layers"][0]:
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        outputs["embed_frameID"] = self.dropout(self.output_emb_frames(self.emb_relu_frames(X_wsd)))
-            if layer == "classify_wsd" and layer in data["batch_layers"][0]:
+            if layer == "embed_frameID" and layer in batch_layers:
+                outputs["embed_frameID"] = self.dropout(self.output_emb_frames(self.emb_relu_frames(X_wsd)))
+            if layer == "classify_wsd" and layer in batch_layers:
                 if len(self.synsets2id) > 0:
                     outputs["classify_wsd"] = self.dropout(self.output_classify(X_wsd))
                 else:
@@ -140,11 +131,11 @@ class WSDModel(nn.Module):
                         outputs_classif.append(output_classif)
                     outputs_classif = pad_sequence(outputs_classif, batch_first=True, padding_value=-100)
                     outputs["classify_wsd"] = outputs_classif
-            if layer == "pos_tagger" and layer in data["batch_layers"][0]:
+            if layer == "pos_tagger" and layer in batch_layers:
                 outputs["pos_tagger"] = pad_sequence(self.dropout(self.pos_tags(X)),
                                                      batch_first=True,
                                                      padding_value=-100)
-            if layer == "ner" and layer in data["batch_layers"][0]:
+            if layer == "ner" and layer in batch_layers:
                 outputs["ner"] = pad_sequence(self.dropout(self.ner(X)),
                                               batch_first=True,
                                               padding_value=-100)

@@ -77,6 +77,7 @@ class BatchSchedulerSampler(torch.utils.data.sampler.Sampler):
         datasets_length = []
         for dataset_idx in range(self.number_of_datasets):
             cur_dataset = self.dataset.datasets[dataset_idx]
+            print("The length for dataset + " + str(cur_dataset.batch_layers) + " is " + str(len(cur_dataset.data)))
             sampler = RandomSampler(cur_dataset)
             samplers_list.append(sampler)
             cur_sampler_iterator = sampler.__iter__()
@@ -241,8 +242,9 @@ class WSDataset(Dataset):
                 # Copy the list of synsets, so that we don't change the dict
                 neg_options = copy.copy(all_senses)
                 for sense in these_senses:
-                    # Get rid of the gold synsets
-                    neg_options.remove(sense)
+                    # Get rid of the gold
+                    if sense in neg_options:
+                        neg_options.remove(sense)
                 while True:
                     # If no synsets remain in the list, pick any synset at random
                     if len(neg_options) == 0:
@@ -289,6 +291,7 @@ class WSDataset(Dataset):
         data = []
         for f in files:
             sentences = parse(open(f, "r").read(), CUSTOM_FIELDS)
+            print("Length for file + " + f + " is " + str(len(sentences)))
             for sentence in sentences:
                 sample = Sample()
                 sentence_str = []
