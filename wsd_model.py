@@ -14,9 +14,10 @@ class WSDModel(nn.Module):
 
     def __init__(self, lang, embeddings_dim, embedding_weights, hidden_dim, hidden_layers, dropout,
                  output_layers=["embed_wsd"], lemma2synsets=None, synsets2id={}, pos_tags={},
-                 entity_tags={}, use_flair=False, embeddings_path=None):
+                 entity_tags={}, use_flair=False, combine_WN_FN=False):
         super(WSDModel, self).__init__()
         self.use_flair = use_flair
+        self.combine_WN_FN = combine_WN_FN
         self.output_layers = output_layers
         self.hidden_layers = hidden_layers
         self.hidden_dim = hidden_dim
@@ -67,6 +68,9 @@ class WSDModel(nn.Module):
             # We want output with the size of the lemma&synset embeddings
             self.emb_relu = nn.ReLU()
             self.output_emb = nn.Linear(2*hidden_dim, output_emb_dim)
+        if "embed_frameID" in self.output_layers:
+            self.emb_relu_frames = nn.ReLU()
+            self.output_emb_frames = nn.Linear(2 * hidden_dim, output_emb_dim)
         if "classify_wsd" in self.output_layers:
             if len(self.synsets2id) > 0:
                 self.output_classify = nn.Linear(2*hidden_dim, len(self.synsets2id))
@@ -84,7 +88,8 @@ class WSDModel(nn.Module):
             self.ner = nn.Linear(2 * hidden_dim, len(entity_tags))
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, data, lemmas):
+    def forward(self, data, lemmas, source_ids=None):
+        batch_layers = [layers[0] for layers in data['batch_layers']]
         if self.use_flair is True:
             X = data["sentence"]
             X = [Sentence(sent) for sent in X]
@@ -111,10 +116,11 @@ class WSDModel(nn.Module):
         X_wsd = X_wsd.view(-1, 2 * self.hidden_dim)  # shape is [num_labels, 2*hidden_dim]
         outputs = {}
         for layer in self.output_layers:
-            if layer == "embed_wsd":
-
+            if layer == "embed_wsd" and layer in batch_layers:
                 outputs["embed_wsd"] = self.dropout(self.output_emb(self.emb_relu(X_wsd)))
-            if layer == "classify_wsd":
+            if layer == "embed_frameID" and layer in batch_layers:
+                outputs["embed_frameID"] = self.dropout(self.output_emb_frames(self.emb_relu_frames(X_wsd)))
+            if layer == "classify_wsd" and layer in batch_layers:
                 if len(self.synsets2id) > 0:
                     outputs["classify_wsd"] = self.dropout(self.output_classify(X_wsd))
                 else:
@@ -125,11 +131,11 @@ class WSDModel(nn.Module):
                         outputs_classif.append(output_classif)
                     outputs_classif = pad_sequence(outputs_classif, batch_first=True, padding_value=-100)
                     outputs["classify_wsd"] = outputs_classif
-            if layer == "pos_tagger":
+            if layer == "pos_tagger" and layer in batch_layers:
                 outputs["pos_tagger"] = pad_sequence(self.dropout(self.pos_tags(X)),
                                                      batch_first=True,
                                                      padding_value=-100)
-            if layer == "ner":
+            if layer == "ner" and layer in batch_layers:
                 outputs["ner"] = pad_sequence(self.dropout(self.ner(X)),
                                               batch_first=True,
                                               padding_value=-100)
@@ -175,6 +181,26 @@ class WSDModel(nn.Module):
             elif layer == "pos_tagger":
                 outputs["pos_tagger"] = self.dropout(self.pos_tags(X_pos))
         return outputs
+
+def embed_concepts(data, outputs, query, embedding_dim, loss_func, alpha):
+    mask_embed = torch.reshape(data["mask"], (data["mask"].shape[0], data["mask"].shape[1], 1))
+    targets_embed = torch.masked_select(data["targets_embed"], mask_embed)
+    targets_embed = targets_embed.view(-1, embedding_dim)
+    neg_targets = torch.masked_select(data["neg_targets"], mask_embed)
+    neg_targets = neg_targets.view(-1, embedding_dim)
+    # targets_classify = targets_classify.view(-1, max_labels)
+    loss_embed = alpha * loss_func(outputs[query], targets_embed) + \
+                 (1 - alpha) * (1 - loss_func(outputs[query], neg_targets))
+    return
+
+def classify_wsd():
+    return
+
+def pos_tagger():
+    return
+
+def ner():
+    return
 
 
 def calculate_accuracy_embedding(outputs, lemmas, gold_synsets, lemma2synsets, embeddings, src2id, pos_filter=True):

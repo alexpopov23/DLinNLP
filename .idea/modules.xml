@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ProjectModuleManager">
+    <modules>
+      <module fileurl="file://$PROJECT_DIR$/.idea/DLinNLP.iml" filepath="$PROJECT_DIR$/.idea/DLinNLP.iml" />
+      <module fileurl="file://$PROJECT_DIR$/../SeNSEI/.idea/SeNSEI.iml" filepath="$PROJECT_DIR$/../SeNSEI/.idea/SeNSEI.iml" />
+      <module fileurl="file://$PROJECT_DIR$/../ewiser-master/.idea/ewiser-master.iml" filepath="$PROJECT_DIR$/../ewiser-master/.idea/ewiser-master.iml" />
+      <module fileurl="file://$PROJECT_DIR$/../spacy-custom/spaCy-master/.idea/spaCy-master.iml" filepath="$PROJECT_DIR$/../spacy-custom/spaCy-master/.idea/spaCy-master.iml" />
+      <module fileurl="file://$PROJECT_DIR$/../spacy-bg/.idea/spacy-bg.iml" filepath="$PROJECT_DIR$/../spacy-bg/.idea/spacy-bg.iml" />
+      <module fileurl="file://$PROJECT_DIR$/../spacy-custom/spacy-custom/.idea/spacybg.iml" filepath="$PROJECT_DIR$/../spacy-custom/spacy-custom/.idea/spacybg.iml" />
+      <module fileurl="file://$PROJECT_DIR$/../utils/.idea/utils.iml" filepath="$PROJECT_DIR$/../utils/.idea/utils.iml" />
+    </modules>
+  </component>
+</project>

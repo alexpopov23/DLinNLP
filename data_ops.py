@@ -12,10 +12,119 @@ import xml.etree.ElementTree as ET
 
 from conllu import parse
 from torch.utils.data import Dataset
+from torch.utils.data.sampler import RandomSampler
 
-CUSTOM_FIELDS = ('form', 'lemma', 'pos', 'synsets', 'entity')
+CUSTOM_FIELDS = ('form', 'lemma', 'pos', 'lu', 'senses', 'entity')
 
+POS_MAP = {"!": ".", "#": ".", "$": ".", "''": ".", "(": ".", ")": ".", ",": ".", "-LRB-": ".", "-RRB-": ".",
+           ".": ".", ":": ".", "?": ".", "CC": "CONJ", "CD": "NUM", "CD|RB": "X", "DT": "DET", "EX": "DET",
+           "FW": "X", "IN": "ADP", "IN|RP": "ADP", "JJ": "ADJ", "JJR": "ADJ", "JJRJR": "ADJ", "JJS": "ADJ",
+           "JJ|RB": "ADJ", "JJ|VBG": "ADJ", "LS": "X", "MD": "VERB", "NN": "NOUN", "NNP": "NOUN", "NNPS": "NOUN",
+           "NNS": "NOUN", "NN|NNS": "NOUN", "NN|SYM": "NOUN", "NN|VBG": "NOUN", "NP": "NOUN", "PDT": "DET",
+           "POS": "PRT", "PRP": "PRON", "PRP$": "PRON", "PRP|VBP": "PRON", "PRT": "PRT", "RB": "ADV", "RBR": "ADV",
+           "RBS": "ADV", "RB|RP": "ADV", "RB|VBG": "ADV", "RN": "X", "RP": "PRT", "SYM": "X", "TO": "PRT",
+           "UH": "X", "VB": "VERB", "VBD": "VERB", "VBD|VBN": "VERB", "VBG": "VERB", "VBG|NN": "VERB",
+           "VBN": "VERB", "VBP": "VERB", "VBP|TO": "VERB", "VBZ": "VERB", "VP": "VERB", "WDT": "DET", "WH": "X",
+           "WP": "PRON", "WP$": "PRON", "WRB": "ADV", "``": "."}
+POS_NORMALIZE = {"MD|VB": "MD", "NNP|NP": "NNP", "NPS": "POS", "PR": "WRB", "NNP|VBN": "VBN", "PP": "PRP"}
 POS_MAP_SIMPLE = {"NOUN": "n", "VERB": "v", "ADJ": "a", "ADV": "r"}
+
+def get_pos(old_pos):
+    if old_pos in globals.pos_map:
+        new_pos = globals.pos_map[old_pos]
+        if new_pos in globals.pos_map_simple:
+            new_pos = globals.pos_map_simple[new_pos]
+        else:
+            new_pos = new_pos.lower()
+    else:
+        new_pos = old_pos.lower()
+    return new_pos
+
+class ConcatDataLoader(torch.utils.data.DataLoader):
+    def __init__(self, *dataloaders):
+        self.dataloaders = dataloaders
+        self.thresholds = []
+        init_threshold = 0.0
+        for d in self.dataloaders:
+            init_threshold += len(d._index_sampler)
+            self.thresholds.add(init_threshold)
+
+    def __getitem__(self, i):
+
+        return tuple(d[i] for d in self.datasets)
+
+    def __len__(self):
+        return sum(len(d._index_sampler) for d in self.dataloaders)
+
+'''Modified from: https://github.com/bomri/code-for-posts/tree/master/mtl-data-loading'''
+class BatchSchedulerSampler(torch.utils.data.sampler.Sampler):
+    """
+    iterate over tasks and provide a random batch per task in each mini-batch
+    """
+    def __init__(self, dataset, batch_size):
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.number_of_datasets = len(dataset.datasets)
+        self.total_length = sum(len(dataset) for dataset in dataset.datasets)
+        self.partitions = [cur_length*1.0/self.total_length for cur_length in dataset.cumulative_sizes]
+
+    def __len__(self):
+        return len(self.dataset) * self.number_of_datasets
+
+    def __iter__(self):
+        samplers_list = []
+        sampler_iterators = []
+        datasets_length = []
+        for dataset_idx in range(self.number_of_datasets):
+            cur_dataset = self.dataset.datasets[dataset_idx]
+            print("The length for dataset + " + str(cur_dataset.batch_layers) + " is " + str(len(cur_dataset.data)))
+            sampler = RandomSampler(cur_dataset)
+            samplers_list.append(sampler)
+            cur_sampler_iterator = sampler.__iter__()
+            sampler_iterators.append(cur_sampler_iterator)
+            datasets_length.append(len(cur_dataset))
+
+        push_index_val = [0] + self.dataset.cumulative_sizes[:-1]
+        step = self.batch_size # * self.number_of_datasets
+        samples_to_grab = self.batch_size
+        largest_dataset_index = torch.argmax(torch.as_tensor(datasets_length)).item()
+        # for this case we want to get all samples in dataset, this force us to resample from the smaller datasets
+        # epoch_samples = datasets_length[largest_dataset_index] * self.number_of_datasets
+        # iterate over the total length of the combined datasets (slightly oversampling some datasets, and undersampling others)
+        epoch_samples = self.total_length
+
+        final_samples_list = []  # this is a list of indexes from the combined dataset
+        for _ in range(0, epoch_samples, step):
+            #TODO instead of alternating between datasets, flip a (weighted) coin every time
+            coin_toss = torch.rand(1).item()
+            for threshold in self.partitions:
+                if threshold > coin_toss:
+                    i = self.partitions.index(threshold)
+                    break
+            # for i in range(self.number_of_datasets):
+            cur_batch_sampler = sampler_iterators[i]
+            cur_samples = []
+            for _ in range(samples_to_grab):
+                try:
+                    cur_sample_org = cur_batch_sampler.__next__()
+                    cur_sample = cur_sample_org + push_index_val[i]
+                    cur_samples.append(cur_sample)
+                except StopIteration:
+                    if i == largest_dataset_index:
+                        # largest dataset iterator is done we can break
+                        samples_to_grab = len(cur_samples)  # adjusting the samples_to_grab
+                        # got to the end of iterator - extend final list and continue to next task if possible
+                        break
+                    else:
+                        # restart the iterator - we want more samples until finishing with the largest dataset
+                        sampler_iterators[i] = samplers_list[i].__iter__()
+                        cur_batch_sampler = sampler_iterators[i]
+                        cur_sample_org = cur_batch_sampler.__next__()
+                        cur_sample = cur_sample_org + push_index_val[i]
+                        cur_samples.append(cur_sample)
+            final_samples_list.extend(cur_samples)
+
+        return iter(final_samples_list)
 
 
 class Sample():
@@ -27,14 +136,14 @@ class Sample():
         self.lemmas = []
         self.pos = []
         self.lemmas_pos = []
-        self.synsets = []
+        self.senses = []
         self.entities = []
         self.sentence_str = ""
 
 class WSDataset(Dataset):
 
-    def __init__(self, device, tsv_data, src2id, embeddings, embeddings_dim, embeddings_input, max_labels, lemma2synsets,
-                 single_softmax, known_synsets=None, pos_map=None, pos_filter=False):
+    def __init__(self, device, tsv_data, src2id, embeddings, embeddings_dim, embeddings_input, max_labels, lu2senses,
+                 single_softmax, batch_layers, known_senses=None, pos_map=None, pos_filter=False):
         # Our data has some pretty long sentences, so we will set a large max length
         # Alternatively, can throw them out or truncate them
         self.device = device
@@ -43,27 +152,28 @@ class WSDataset(Dataset):
         self.embeddings_dim = embeddings_dim
         self.embeddings_input = embeddings_input
         self.max_labels = max_labels
-        self.lemma2synsets = lemma2synsets
+        self.lu2senses = lu2senses
         self.pos_filter = pos_filter
-        self.known_lemmas, self.known_pos, self.known_entity_tags = set(), set(), set()
+        self.known_lus, self.known_pos, self.known_entity_tags = set(), set(), set()
         if pos_map is not None:
             pos_map = get_pos_tagset(pos_map, "medium")
         self.data = self.parse_tsv(tsv_data, 300, pos_map, pos_filter)
-        self.known_lemmas, self.known_pos, self.known_entity_tags = \
-            sorted(self.known_lemmas), sorted(self.known_pos), sorted(self.known_entity_tags)
+        self.known_lus, self.known_pos, self.known_entity_tags = \
+            sorted(self.known_lus), sorted(self.known_pos), sorted(self.known_entity_tags)
         self.single_softmax = single_softmax
+        self.batch_layers = batch_layers
         if self.single_softmax is True:
-            if known_synsets is None:
-                self.known_synsets = {"UNKNOWN" : 0}
+            if known_senses is None:
+                self.known_senses = {"UNKNOWN" : 0}
                 id = 1
-                for lemma in self.known_lemmas:
-                    if lemma in lemma2synsets:
-                        for synset in lemma2synsets[lemma]:
-                            if synset not in self.known_synsets:
-                                self.known_synsets[synset] = id
+                for lu in self.known_lus:
+                    if lu in lu2senses:
+                        for sense in lu2senses[lu]:
+                            if sense not in self.known_senses:
+                                self.known_senses[sense] = id
                                 id += 1
             else:
-                self.known_synsets = known_synsets
+                self.known_senses = known_senses
         self.known_pos = {pos_tag:i for i, pos_tag in enumerate(self.known_pos)}
         self.known_entity_tags = {entity_tag: i for i, entity_tag in enumerate(self.known_entity_tags)}
 
@@ -81,10 +191,10 @@ class WSDataset(Dataset):
                   else self.src2id["<UNK>"] for token in input_source]
         targets_embed, neg_targets, targets_classify, targets_pos, targets_ner, mask, pos_mask, ner_mask, lengths_labels = \
             [], [], [], [], [], [], [], [], 0
-        for i, label in enumerate(sample.synsets):
+        for i, label in enumerate(sample.senses):
             lemma = sample.lemmas[i]
             lemma_pos = sample.lemmas_pos[i]
-            dict_key = lemma_pos if self.pos_filter is True else lemma
+            dict_key = lemma_pos.lower() if self.pos_filter is True else lemma.lower()
             pos = sample.pos[i]
             entity = sample.entities[i]
             target_embed, neg_target, target_classify = \
@@ -108,44 +218,45 @@ class WSDataset(Dataset):
                 pos_mask.append(True)
                 ner_mask.append(True)
                 # lemma_pos = sample.lemmas[i] + "-" + sample.pos[i] # e.g. "bear-n"
-                all_synsets = self.lemma2synsets[dict_key] # TODO: parametrize this
+                all_senses = self.lu2senses[dict_key] # TODO: parametrize this
                 # Take care of cases of multiple labels, e.g. "01104026-a,00357790-a"
-                these_synsets = label.split(",")
-                num_labels = len(these_synsets)
-                for synset in these_synsets:
-                    if synset in self.src2id:
-                        synset_embedding = torch.Tensor(self.embeddings[self.src2id[synset]])
+                these_senses = label.split(",")
+                num_labels = len(these_senses)
+                for sense in these_senses:
+                    if sense in self.src2id:
+                        synset_embedding = torch.Tensor(self.embeddings[self.src2id[sense]])
                         target_embed += synset_embedding
                         # target_classify[self.lemma2synsets[lemma_pos].index(synset)] = 1.0
                 target_embed /= num_labels
                 # Either use separate softmax layers per lemma/LU, or use one large softmax for all senses
                 if self.single_softmax is True:
-                    synset = random.choice(these_synsets)
-                    if synset in self.known_synsets:
-                        targets_classify.append(self.known_synsets[synset])
+                    sense = random.choice(these_senses)
+                    if sense in self.known_senses:
+                        targets_classify.append(self.known_senses[sense])
                     else:
-                        targets_classify.append(self.known_synsets["UNKNOWN"])
+                        targets_classify.append(self.known_senses["UNKNOWN"])
                 else:
-                    targets_classify.append(self.lemma2synsets[dict_key].index(random.choice(these_synsets)))
+                    targets_classify.append(self.lu2senses[dict_key].index(random.choice(these_senses)))
                 lengths_labels += 1
                 # Pick negative targets too
                 # Copy the list of synsets, so that we don't change the dict
-                neg_options = copy.copy(all_synsets)
-                for synset in these_synsets:
-                    # Get rid of the gold synsets
-                    neg_options.remove(synset)
+                neg_options = copy.copy(all_senses)
+                for sense in these_senses:
+                    # Get rid of the gold
+                    if sense in neg_options:
+                        neg_options.remove(sense)
                 while True:
                     # If no synsets remain in the list, pick any synset at random
                     if len(neg_options) == 0:
-                        neg_synset = random.choice(list(self.src2id))
+                        neg_sense = random.choice(list(self.src2id))
                         break
-                    neg_synset = random.choice(neg_options)
+                    neg_sense = random.choice(neg_options)
                     # Make sure the chosen synset has a matching embedding, else remove from list
-                    if neg_synset in self.src2id:
+                    if neg_sense in self.src2id:
                         break
                     else:
-                        neg_options.remove(neg_synset)
-                neg_target = torch.Tensor(self.embeddings[self.src2id[neg_synset]])
+                        neg_options.remove(neg_sense)
+                neg_target = torch.Tensor(self.embeddings[self.src2id[neg_sense]])
             targets_embed.append(target_embed)
             neg_targets.append(neg_target)
             # targets_classify.append(target_classify)
@@ -156,7 +267,7 @@ class WSDataset(Dataset):
                 # "lengths_labels": torch.tensor(lengths_labels, dtype=torch.long),
                 "lengths_labels": lengths_labels,
                 "pos": sample.pos,
-                "synsets": sample.synsets,
+                "senses": sample.senses,
                 "entities": sample.entities,
                 "inputs": torch.tensor(inputs, dtype=torch.long).to(self.device),
                 "targets_embed": torch.stack(targets_embed).clone().detach().to(self.device),
@@ -167,7 +278,8 @@ class WSDataset(Dataset):
                 "targets_ner": torch.tensor(targets_ner, dtype=torch.long).to(self.device),
                 "mask": torch.tensor(mask, dtype=torch.bool).to(self.device),
                 "pos_mask": torch.tensor(pos_mask, dtype=torch.bool).to(self.device),
-                "ner_mask": torch.tensor(ner_mask, dtype=torch.bool).to(self.device)}
+                "ner_mask": torch.tensor(ner_mask, dtype=torch.bool).to(self.device),
+                "batch_layers": self.batch_layers}
         return data
 
     def parse_tsv(self, dataset_path, max_length, pos_map=None, pos_filter=False):
@@ -179,43 +291,52 @@ class WSDataset(Dataset):
         data = []
         for f in files:
             sentences = parse(open(f, "r").read(), CUSTOM_FIELDS)
+            print("Length for file + " + f + " is " + str(len(sentences)))
             for sentence in sentences:
                 sample = Sample()
                 sentence_str = []
                 for token in sentence:
                     sample.forms.append(token["form"])
                     lemma = token["lemma"]
-                    lemma = lemma.replace("'", "APOSTROPHE_")
-                    lemma = lemma.replace(".", "DOT_")
+                    # lemma = lemma.replace("'", "APOSTROPHE_")
+                    # lemma = lemma.replace(".", "DOT_")
                     pos = token["pos"]
                     if pos_map is not None:
                         if pos in pos_map:
                             pos = pos_map[pos]
                     # pos = POS_MAP[pos] if pos in POS_MAP else pos
                     # lemma_pos = lemma + "-" + POS_MAP_SIMPLE[pos] if pos in POS_MAP_SIMPLE else lemma # TODO: handle different POS tags
-                    synsets = token["synsets"]
-                    if synsets != "_":
-                        pos_id = synsets.split(',')[0][-1]
+                    senses = token["senses"]
+                    # if senses != "_":
+                    #     pos_id = senses.split(',')[0][-1]
+                    # else:
+                    #     pos_id = ""
+                    if token["lu"] == "_":
+                        if pos in POS_MAP_SIMPLE:
+                            pos_id = POS_MAP_SIMPLE[pos]
+                        else:
+                            pos_id = pos
+                        lemma_pos = lemma + "-" + pos_id
                     else:
-                        pos_id = ""
-                    lemma_pos = lemma + "-" + pos_id
+                        lemma_pos = token["lu"].replace(" ", "_").lower()
                     entity = token['entity']
                     sample.lemmas.append(lemma)
                     sample.pos.append(pos)
                     sample.lemmas_pos.append(lemma_pos)
                     sample.entities.append(entity)
-                    sample.synsets.append(synsets)
+                    sample.senses.append(senses)
                     if pos_filter is True:
                         lemma_id = lemma_pos
                     else:
                         lemma_id = lemma
-                    if synsets != "_":
-                        if lemma_id not in self.lemma2synsets:
-                            self.lemma2synsets[lemma_id] = [synsets]
-                        else:
-                            if synsets not in self.lemma2synsets[lemma_id]:
-                                self.lemma2synsets[lemma_id].append(synsets)
-                    self.known_lemmas.add(lemma_id)
+                    # TODO Why do I need this?
+                    # if senses != "_":
+                    #     if lemma_id not in self.lu2senses:
+                    #         self.lu2senses[lemma_id] = [senses]
+                    #     else:
+                    #         if senses not in self.lu2senses[lemma_id]:
+                    #             self.lu2senses[lemma_id].append(senses)
+                    self.known_lus.add(lemma_id)
                     self.known_pos.add(pos)
                     self.known_entity_tags.add(entity)
                     sentence_str.append(token["form"])
@@ -226,7 +347,7 @@ class WSDataset(Dataset):
                 sample.lemmas = (sample.lemmas + (max_length - len(sample.lemmas)) * ["<PAD>"])[:max_length]
                 sample.pos = (sample.pos + (max_length - len(sample.pos)) * ["_"])[:max_length]
                 sample.lemmas_pos = (sample.lemmas_pos + (max_length - len(sample.lemmas_pos)) * ["<PAD>"])[:max_length]
-                sample.synsets = (sample.synsets + (max_length - len(sample.synsets)) * ["_"])[:max_length]
+                sample.senses = (sample.senses + (max_length - len(sample.senses)) * ["_"])[:max_length]
                 sample.entities = (sample.entities + (max_length - len(sample.entities)) * ["_"])[:max_length]
                 data.append(sample)
         return data
@@ -260,7 +381,7 @@ def transform_uef2tsv(path_to_dataset, output_path):
                         synsets = [sensekey2synset[key] for key in codes2keys[element.get("id")]]
                     else:
                         synsets = ["_"]
-                    this_sent += "\t".join([wordform, lemma, pos, ",".join(synsets), "_"]) + "\n"
+                    this_sent += "\t".join([wordform, lemma, pos, "_", ",".join(synsets), "_"]) + "\n"
                 sentence_str.append(this_sent)
     dataset_str = "\n".join(sentence_str)
     with open(os.path.join(output_path, data.split(".")[0] + ".tsv"), "w", encoding="utf-8") as f:
@@ -492,14 +613,28 @@ def get_wordnet_lexicon(lexicon_path, pos_filter=False):
                 lemma = lemma_base + "-" + pos
             else:
                 lemma = lemma_base
-            lemma = lemma.replace("'", "APOSTROPHE_")
-            lemma = lemma.replace(".", "DOT_")
+            # lemma = lemma.replace("'", "APOSTROPHE_")
+            # lemma = lemma.replace(".", "DOT_")
             if lemma not in lemma2synsets:
                 lemma2synsets[lemma] = [synset]
             else:
                 lemma2synsets[lemma].append(synset)
     lemma2synsets = collections.OrderedDict(sorted(lemma2synsets.items()))
     return lemma2synsets, max_labels
+
+def rreplace(s, old, new, occurrence):
+    li = s.rsplit(old, occurrence)
+    return new.join(li)
+
+def get_framenet_lexicon(lexicon_path):
+    lu2frames = {}
+    with open(lexicon_path, "r") as lexicon:
+        for line in lexicon.readlines():
+            fields = line.strip().split(" ")
+            lu, frames = fields[0], fields[1:]
+            lu = rreplace(lu, ".", "-", 1)
+            lu2frames[lu] = frames
+    return lu2frames
 
 def get_pos_tagset(f_mapping, granularity="medium"):
 
@@ -525,8 +660,8 @@ def get_pos_tagset(f_mapping, granularity="medium"):
 if __name__ == "__main__":
     f_sensekey2synset = "/home/lenovo/dev/neural-wsd/data/sensekey2synset.pkl"
     sensekey2synset = pickle.load(open(f_sensekey2synset, "rb"))
-    transform_uef2tsv("/home/lenovo/dev/neural-wsd/data/Unified-WSD-framework/WSD_Unified_Evaluation_Datasets/ALL",
-                      "/home/lenovo/dev/neural-wsd/data/Unified-WSD-framework/tsv2")
+    transform_uef2tsv("/home/lenovo/dev/neural-wsd/data/Unified-WSD-framework/WSD_Training_Corpora/SemCor",
+                      "/home/lenovo/dev/neural-wsd/data/combined_WSD_FN")
     # f_dataset = "/home/lenovo/dev/neural-wsd/data/Unified-WSD-framework/tsv/semeval2007.tsv"
     # sentences = parse_tsv(open(f_dataset, "r").read(), 50)
     # transform_original2tsv("/home/lenovo/dev/neural-wsd/data/Unified-WSD-framework/WSD_Training_Corpora/SemCor",
