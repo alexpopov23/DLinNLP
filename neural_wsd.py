@@ -134,9 +134,9 @@ def eval_loop(data_loader, known_lemmas, model, output_layers):
         if "ner" in output_layers and "ner" in batch_layers:
             outputs_ner = outputs["ner"]
             if crf_layer is True:
-                mask_crf_ner = eval_data["ner_mask"][:, :outputs["ner"].shape[1]]
+                mask_crf_ner = eval_data["ner_mask"].cpu()[:, :outputs["ner"].shape[1]]
                 targets_ner = eval_data["targets_ner"][:, :outputs["ner"].shape[1]]
-                outputs_ner = loss_func_ner.decode(outputs_ner, mask=mask_crf_ner)
+                outputs_ner = loss_func_ner.decode(outputs_ner.cpu(), mask=mask_crf_ner.cpu())
             else:
                 targets_ner = torch.from_numpy(numpy.asarray(eval_data["targets_ner"])[eval_data["ner_mask"].cpu()])
                 outputs_ner = outputs["ner"]
@@ -144,7 +144,7 @@ def eval_loop(data_loader, known_lemmas, model, output_layers):
                 targets_ner = slice_and_pad(targets_ner, eval_data["length"])
                 outputs_ner = outputs_ner.numpy()
             f1_ner, [tps, fps, fns], _ = calculate_f1_ner(outputs_ner,
-                                                          targets_ner.numpy(),
+                                                          targets_ner.cpu().numpy(),
                                                           eval_data["length"],
                                                           trainset.known_entity_tags)
             tps_all += tps
@@ -239,7 +239,8 @@ if __name__ == "__main__":
     # Figure out what device to run the network on
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print("Device is :" + str(device))
-    print(torch.cuda.is_available())
+    use_cuda = torch.cuda.is_available()
+    print(use_cuda)
 
     # Get the embeddings and lexicon
     args = parser.parse_args()
@@ -502,7 +503,7 @@ if __name__ == "__main__":
                     if crf_layer is True:
                         mask_crf_ner = data["ner_mask"][:, :outputs["ner"].shape[1]]
                         targets_ner = data["targets_ner"][:, :outputs["ner"].shape[1]]
-                        loss_ner = loss_func_ner(outputs["ner"], targets_ner, mask_crf_ner, reduction="mean")
+                        loss_ner = loss_func_ner(outputs["ner"].cpu(), targets_ner.cpu(), mask_crf_ner.cpu(), reduction="mean")
                         loss_ner *= (-1.0 if crf_layer is True else 1.0)
                     else:
                         targets_ner = torch.from_numpy(numpy.asarray(data["targets_ner"])[data["ner_mask"].cpu()])
@@ -542,6 +543,29 @@ if __name__ == "__main__":
                         average_loss_ner /= count_ner
                         print("Average ner tagger loss (training): " + str(average_loss_ner.cpu().detach().numpy()))
                         average_loss_overall += average_loss_ner.cpu().detach().numpy()
+                        if crf_layer is True:
+                            matches_ner, total_ner = calculate_accuracy_crf(loss_func_ner,
+                                                                            outputs["ner"].cpu(),
+                                                                            mask_crf_ner.cpu(),
+                                                                            targets_ner.cpu())
+                            outputs_ner = loss_func_ner.decode(outputs["ner"].cpu(), mask=mask_crf_ner.cpu())
+                        else:
+                            matches_ner, total_ner = calculate_accuracy_classification(outputs_ner, targets_ner)
+                            outputs_ner = torch.argmax(outputs_ner, dim=1)
+                            outputs_ner = slice_and_pad(outputs_ner, data["length"])
+                            targets_ner = slice_and_pad(targets_ner, data["length"])
+                            outputs_ner = outputs_ner.numpy()
+                        f1_ner, _, _ = calculate_f1_ner(outputs_ner,
+                                                        targets_ner.cpu().numpy(),
+                                                        data["length"],
+                                                        trainset.known_entity_tags)
+                        train_accuracy_ner = matches_ner * 1.0 / total_ner
+
+                        print("Training ner tagger accuracy: " + str(train_accuracy_ner))
+                        print("F1-score for NER: " + str(f1_ner))
+                        average_loss_ner /= (eval_at if step != 0 else 1)
+                        print("Average ner tagger loss (training): " + str(average_loss_ner.detach().numpy()))
+                        average_loss_overall += average_loss_ner.detach().numpy()
                     print("Average overall loss (training): " + str(average_loss_overall))
                     average_loss_embed_wsd, average_loss_embed_frameID, average_loss_classif, average_loss_pos, \
                     average_loss_ner, average_loss_overall = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
