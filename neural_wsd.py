@@ -265,6 +265,7 @@ if __name__ == "__main__":
     #     single_softmax = True
     # else:
     single_softmax = True if args.n_classifiers == "single" else False
+    synset2id = {}
 
     # Get model parameters
     output_layers = [str.strip(layer) for layer in args.output_layers.split(",")]
@@ -291,76 +292,98 @@ if __name__ == "__main__":
     if dev_path is None and test_path is None:
         split_dataset = True
     primary_batch_layers = copy.copy(output_layers)
-    if combine_WN_FN is True:
+    if "embed_frameID" in output_layers:
         primary_batch_layers.remove("embed_frameID")
         frame_batch_layers = ["embed_frameID"]
-    trainset = WSDataset(device, train_path, src2id, embeddings, embedding_dim, embeddings_input, max_labels,
-                         lemma2synsets, single_softmax, primary_batch_layers, pos_map=f_pos_map, pos_filter=pos_filter)
-    known_pos = trainset.known_pos
-    known_lemmas = trainset.known_lus
-    known_entity_tags = trainset.known_entity_tags
-
-    if single_softmax is True:
-        synset2id = trainset.known_senses
-    else:
-        synset2id = {}
+    # if "embed_frameID" in primary_batch_layers:
+    #     lu2concepts = lu2frames
+    #     train_path, dev_path, test_path = frame_path_train, frame_path_dev, frame_path_test
+    # else:
+    #     lu2concepts = lemma2synsets
+    # trainset = WSDataset(device, train_path, src2id, embeddings, embedding_dim, embeddings_input, max_labels,
+    #                      lu2concepts, single_softmax, primary_batch_layers, pos_map=f_pos_map, pos_filter=pos_filter)
+    # known_pos = trainset.known_pos
+    # known_lemmas = trainset.known_lus
+    # known_entity_tags = trainset.known_entity_tags
+    #
+    # if single_softmax is True:
+    #     synset2id = trainset.known_senses
+    # else:
+    #     synset2id = {}
 
     # if there is only a single dataset for train/dev/test purposes, sample from it; else, just load the dev/test-sets
     trainsampler, devsampler, testsampler = None, None, None
+    known_pos, known_lemmas, known_entity_tags = {}, {}, {}
 
     if split_dataset is False:
-        devset = WSDataset(device, dev_path, src2id, embeddings, embedding_dim, embeddings_input, max_labels,
-                           lemma2synsets, single_softmax, primary_batch_layers, synset2id, pos_filter=pos_filter)
-        testset = WSDataset(device, test_path, src2id, embeddings, embedding_dim, embeddings_input, max_labels,
-                            lemma2synsets, single_softmax, primary_batch_layers, synset2id, pos_filter=pos_filter)
-        devloader = torch.utils.data.DataLoader(dataset=devset, batch_size=batch_size, shuffle=False)
-        testloader = torch.utils.data.DataLoader(dataset=testset, batch_size=batch_size, shuffle=False)
-        if combine_WN_FN is True:
+        if len(primary_batch_layers) > 0:
+            trainset = WSDataset(device, train_path, src2id, embeddings, embedding_dim, embeddings_input, max_labels,
+                                 lemma2synsets, single_softmax, primary_batch_layers, pos_map=f_pos_map,
+                                 pos_filter=pos_filter)
+            known_pos = trainset.known_pos
+            known_lemmas = trainset.known_lus
+            known_entity_tags = trainset.known_entity_tags
+
+            if single_softmax is True:
+                synset2id = trainset.known_senses
+
+            devset = WSDataset(device, dev_path, src2id, embeddings, embedding_dim, embeddings_input, max_labels,
+                               lemma2synsets, single_softmax, primary_batch_layers, synset2id, pos_filter=pos_filter)
+            testset = WSDataset(device, test_path, src2id, embeddings, embedding_dim, embeddings_input, max_labels,
+                                lemma2synsets, single_softmax, primary_batch_layers, synset2id, pos_filter=pos_filter)
+            devloader = torch.utils.data.DataLoader(dataset=devset, batch_size=batch_size, shuffle=False)
+            testloader = torch.utils.data.DataLoader(dataset=testset, batch_size=batch_size, shuffle=False)
+        if "embed_frameID" in output_layers:
             trainset_frameID = WSDataset(device, frame_path_train, src2id, embeddings, embedding_dim, embeddings_input,
                                          max_labels, lu2frames, single_softmax, frame_batch_layers, pos_map=f_pos_map,
                                          pos_filter=True)
-            trainset = ConcatDataset([trainset, trainset_frameID])
             devset_frameID = WSDataset(device, frame_path_dev, src2id, embeddings, embedding_dim, embeddings_input,
                                        max_labels, lu2frames, single_softmax, frame_batch_layers, pos_map=f_pos_map,
                                        pos_filter=True)
             testset_frameID = WSDataset(device, frame_path_test, src2id, embeddings, embedding_dim, embeddings_input,
                                         max_labels, lu2frames, single_softmax, frame_batch_layers, pos_map=f_pos_map,
                                         pos_filter=True)
-            trainloader = torch.utils.data.DataLoader(dataset=trainset,
-                                                      sampler=BatchSchedulerSampler(dataset=trainset,
-                                                                                    batch_size=batch_size),
-                                                      batch_size=batch_size,
-                                                      shuffle=False)
             devloader_frameID = torch.utils.data.DataLoader(dataset=devset_frameID, batch_size=batch_size, shuffle=False)
             testloader_frameID = torch.utils.data.DataLoader(dataset=testset_frameID, batch_size=batch_size, shuffle=False)
+            if combine_WN_FN is True:
+                trainset = ConcatDataset([trainset, trainset_frameID])
+                trainloader = torch.utils.data.DataLoader(dataset=trainset,
+                                                          sampler=BatchSchedulerSampler(dataset=trainset,
+                                                                                        batch_size=batch_size),
+                                                          batch_size=batch_size,
+                                                          shuffle=False)
+            else:
+                trainloader = torch.utils.data.DataLoader(trainset_frameID, batch_size=batch_size, shuffle=True)
+                devloader = torch.utils.data.DataLoader(dataset=devset_frameID, batch_size=batch_size,
+                                                                shuffle=False)
+                testloader = torch.utils.data.DataLoader(dataset=testset_frameID, batch_size=batch_size,
+                                                                 shuffle=False)
         else:
             trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True)
-            devloader = torch.utils.data.DataLoader(devset, batch_size=batch_size, shuffle=False)
-            testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size, shuffle=False)
-    else:
-        if os.path.exists(f_indices):
-            with open(f_indices, "rb") as f:
-                train_indices = pickle.load(f)
-                dev_indices = pickle.load(f)
-                test_indices = pickle.load(f)
-        else:
-            dataset_size = len(trainset)
-            indices = list(range(dataset_size))
-            split = int(numpy.floor(0.1 * dataset_size))
-            numpy.random.seed(42)
-            numpy.random.shuffle(indices)
-            dev_indices, test_indices, train_indices = indices[:split], indices[split:2*split], indices[2*split:]
-            with open(f_indices, "wb") as f:
-                pickle.dump(train_indices, f, protocol=2)
-                pickle.dump(dev_indices, f, protocol=2)
-                pickle.dump(test_indices, f, protocol=2)
-            f.close()
-        trainsampler = SubsetRandomSampler(train_indices)
-        devsampler = SubsetRandomSampler(dev_indices)
-        testsampler = SubsetRandomSampler(test_indices)
-        trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, sampler=trainsampler)
-        devloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, sampler=devsampler)
-        testloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, sampler=testsampler)
+    # else:
+    #     if os.path.exists(f_indices):
+    #         with open(f_indices, "rb") as f:
+    #             train_indices = pickle.load(f)
+    #             dev_indices = pickle.load(f)
+    #             test_indices = pickle.load(f)
+    #     else:
+    #         dataset_size = len(trainset)
+    #         indices = list(range(dataset_size))
+    #         split = int(numpy.floor(0.1 * dataset_size))
+    #         numpy.random.seed(42)
+    #         numpy.random.shuffle(indices)
+    #         dev_indices, test_indices, train_indices = indices[:split], indices[split:2*split], indices[2*split:]
+    #         with open(f_indices, "wb") as f:
+    #             pickle.dump(train_indices, f, protocol=2)
+    #             pickle.dump(dev_indices, f, protocol=2)
+    #             pickle.dump(test_indices, f, protocol=2)
+    #         f.close()
+    #     trainsampler = SubsetRandomSampler(train_indices)
+    #     devsampler = SubsetRandomSampler(dev_indices)
+    #     testsampler = SubsetRandomSampler(test_indices)
+    #     trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, sampler=trainsampler)
+    #     devloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, sampler=devsampler)
+    #     testloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, sampler=testsampler)
 
     # Construct data loaders for this specific model
 
